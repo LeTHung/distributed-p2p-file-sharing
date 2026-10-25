@@ -1,42 +1,64 @@
-# BitTorrent-Lite: Hybrid P2P File Sharing
+# BitTorrent Lite Hybrid P2P File Sharing
 
-Đồ án cuối kỳ môn Các hệ thống phân tán (INT1405), Track A.
+Đồ án cuối kỳ môn Các hệ thống phân tán INT1405 - Nhóm 6.
 
-Hệ thống cho phép nhiều peer chia sẻ một file theo từng chunk. Tracker trung tâm chỉ lưu metadata và directory peer; dữ liệu chunk truyền trực tiếp giữa các peer qua TCP.
+Hệ thống cho phép nhiều peer cùng chia sẻ một file theo từng chunk. Tracker trung tâm chỉ quản lý metadata và directory peer/chunk bằng PostgreSQL; dữ liệu chunk truyền trực tiếp giữa các peer qua TCP.
 
-## Mục tiêu bắt buộc
+## Phân công
 
-- Chia file thành các chunk có kích thước cố định, dùng SHA-256 để kiểm tra từng chunk.
-- Tracker quản lý peer, file, chunk, heartbeat và loại peer hết hạn.
-- Seeder phục vụ nhiều yêu cầu tải chunk đồng thời.
-- Leecher tìm peer qua tracker, tải song song, kiểm tra hash, ghép file và đổi nguồn khi lỗi.
-- Demo nhiều tiến trình trên cùng một máy, gồm ít nhất Tracker, 2 Seeder và 1 Leecher.
+| Thành viên | Vai trò | Phạm vi chính |
+|---|---|---|
+| Lương Thị Như Huỳnh | Student 1 - Tracker | Tracker, PostgreSQL, metadata, heartbeat, directory và tích hợp |
+| Lê Tiến Hưng | Student 2 - Seeder/Uploader | Chia file, hash, đăng ký file/chunk, peer server, worker và throttling |
+| Võ Nguyễn Bảo Hưng | Student 3 - Leecher/Downloader | Truy vấn peer, tải song song, xác minh hash, failover và ghép file |
 
-## Công nghệ
+Tài liệu kế hoạch, quy tắc, giao thức và demo được lưu trên [Google Drive của nhóm](https://drive.google.com/drive/u/0/folders/1eXti4kdNvFuTGrBXi3ccLNkYgyXzfiJ6). GitHub là nguồn chính của code, issue và pull request.
 
-Python 3.11+, TCP socket, JSON với length-prefix 4 byte, `threading`, PostgreSQL và `psycopg`.
+## Công nghệ đã chốt
 
-## Cấu trúc dự kiến
+- Python 3.11+
+- TCP socket, JSON UTF-8 và length prefix 4 byte
+- `threading` cho xử lý đồng thời
+- PostgreSQL và `psycopg`
+- Nhiều tiến trình chạy trên cùng một máy khi demo
+
+## Cấu trúc code
 
 ```text
-src/
-  common/        # Protocol, framing, metadata, hash, cấu hình chung
-  tracker/       # Tracker server và lớp truy cập PostgreSQL
-  peer/          # Peer server (uploader) và client (downloader)
-database/        # Schema và script khởi tạo database
-docs/            # Thiết kế, giao thức, quy tắc và kế hoạch
+common/      # framing TCP, cấu hình và các tiện ích dùng chung
+tracker/     # Student 1 triển khai Tracker và lớp truy cập PostgreSQL
+peer/        # Student 2 và Student 3 triển khai Seeder và Leecher
+database/    # Schema PostgreSQL
+tests/       # Test tự động cho các thành phần dùng chung
+samples/     # Chỉ file mẫu nhỏ, vô hại
 ```
 
-## Bắt đầu
+## Khởi động môi trường
 
-1. Cài Python 3.11+ và PostgreSQL 16+.
-2. Tạo môi trường ảo: `python -m venv .venv`.
-3. Kích hoạt môi trường ảo và chạy `pip install -r requirements.txt`.
-4. Sao chép `.env.example` thành `.env`, rồi điền cấu hình PostgreSQL.
-5. Tạo database và chạy `database/schema.sql`.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
 
-Đọc theo thứ tự: [Bắt đầu](docs/START_HERE.md), [mục tiêu/tiêu chí nghiệm thu](docs/PROJECT_CHARTER.md), [kiến trúc](docs/ARCHITECTURE.md), [giao thức](docs/PROTOCOL.md), [quy tắc nhóm](docs/TEAM_RULES.md), [kế hoạch 4 tuần](docs/WORK_PLAN.md) và [kịch bản demo](docs/DEMO_AND_TEST_PLAN.md).
+Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `database/schema.sql`. Không commit `.env`, password, token hoặc file demo lớn.
+
+## Hợp đồng kỹ thuật không được tự ý đổi
+
+- `file_id` là SHA-256 hex chữ thường của toàn bộ nội dung file.
+- `chunk_index` bắt đầu từ `0`; chunk cuối có thể ngắn hơn `chunk_size`.
+- Header của mọi thông điệp TCP là 4 byte unsigned big-endian, biểu diễn độ dài JSON UTF-8 đi sau.
+- Request Tracker: `register_peer`, `register_file`, `announce_chunks`, `get_peers`, `heartbeat`, `unregister_peer`, `list_files`.
+- Request giữa peer: `get_chunk`.
+- Chỉ Tracker được kết nối PostgreSQL. Peer không truy cập database trực tiếp.
 
 ## Cách làm việc
 
-Đọc [docs/TEAM_RULES.md](docs/TEAM_RULES.md) trước khi nhận việc. Kế hoạch và trách nhiệm từng tuần nằm tại [docs/WORK_PLAN.md](docs/WORK_PLAN.md).
+1. Lấy issue được giao theo tuần trên GitHub.
+2. Tạo branch `feature/<mo-ta>` từ `main`.
+3. Mỗi pull request chỉ làm một việc, ghi rõ cách kiểm tra.
+4. Có một thành viên khác review trước khi merge.
+5. Không push trực tiếp lên `main`.
+
+Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
