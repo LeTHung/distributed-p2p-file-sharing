@@ -4,8 +4,8 @@
 
 | Thành viên | Vai trò chính | Phạm vi sở hữu |
 |---|---|---|
-| Lê Tiến Hưng | Student 1 - Tracker & tích hợp | `src/tracker/`, `src/common/` dùng chung, PostgreSQL, metadata, heartbeat, ghép nhánh và demo tổng |
-| Lương Thị Như Huỳnh | Student 2 - Seeder/Uploader | `src/peer/uploader*`, đọc chunk, xử lý worker, đăng ký file/chunk, upload throttling |
+| Lương Thị Như Huỳnh | Student 1 - Tracker & tích hợp | `src/tracker/`, `src/common/` dùng chung, PostgreSQL, metadata, heartbeat, ghép nhánh và demo tổng |
+| Lê Tiến Hưng | Student 2 - Seeder/Uploader | `src/peer/uploader*`, đọc chunk, xử lý worker, đăng ký file/chunk, upload throttling |
 | Võ Nguyễn Bảo Hưng | Student 3 - Leecher/Downloader | `src/peer/downloader*`, lập lịch tải song song, xác minh hash, failover, ghép file |
 
 Mỗi người có trách nhiệm hỗ trợ tích hợp và hiểu luồng toàn hệ thống; phạm vi sở hữu xác định người chịu trách nhiệm chính khi có lỗi.

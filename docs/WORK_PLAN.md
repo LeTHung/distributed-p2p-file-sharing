@@ -2,7 +2,7 @@
 
 Kế hoạch tính từ ngày cả nhóm bắt đầu code. Nếu hạn nộp khác, thay ngày ở đây nhưng giữ nguyên các mốc tích hợp.
 
-| Tuần | Mục tiêu chung có thể kiểm tra | Lê Tiến Hưng - Tracker | Lương Thị Như Huỳnh - Seeder | Võ Nguyễn Bảo Hưng - Leecher |
+| Tuần | Mục tiêu chung có thể kiểm tra | Lương Thị Như Huỳnh - Tracker | Lê Tiến Hưng - Seeder | Võ Nguyễn Bảo Hưng - Leecher |
 |---|---|---|---|---|
 | 1 | Tải được 1 chunk qua Tracker -> Seeder -> Leecher | Tạo DB, schema, Tracker `register_peer`, `register_file`, `get_peers`; viết framing dùng chung | Chia file, tính hash, `register_file`, mở server và trả 1 chunk | Đọc metadata, gọi `get_peers`, xin 1 chunk, kiểm tra hash và lưu `.part` |
 | 2 | Tải xong file nhỏ; 2 Seeder phục vụ đồng thời | Hoàn thiện `announce_chunks`, `list_files`, xử lý truy vấn đồng thời | Worker pool/dispatcher, phục vụ nhiều request; thông báo chunk hiện có | Tải song song nhiều chunk từ 2 nguồn; ghép file và so hash file hoàn chỉnh |
