@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+coverage.xml
+htmlcov/
+data/
+downloads/
+shared/
+*.part
+*.torrent.json
