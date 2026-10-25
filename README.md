@@ -35,7 +35,7 @@ docs/            # Thiết kế, giao thức, quy tắc và kế hoạch
 4. Sao chép `.env.example` thành `.env`, rồi điền cấu hình PostgreSQL.
 5. Tạo database và chạy `database/schema.sql`.
 
-Chi tiết kiến trúc và giao thức nằm tại [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) và [docs/PROTOCOL.md](docs/PROTOCOL.md).
+Đọc theo thứ tự: [Bắt đầu](docs/START_HERE.md), [mục tiêu/tiêu chí nghiệm thu](docs/PROJECT_CHARTER.md), [kiến trúc](docs/ARCHITECTURE.md), [giao thức](docs/PROTOCOL.md), [quy tắc nhóm](docs/TEAM_RULES.md), [kế hoạch 4 tuần](docs/WORK_PLAN.md) và [kịch bản demo](docs/DEMO_AND_TEST_PLAN.md).
 
 ## Cách làm việc
 
