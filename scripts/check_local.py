@@ -8,10 +8,11 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 
 from dotenv import dotenv_values
 
-from common.framing import ProtocolError
+from common.framing import ProtocolError, recv_json, send_json
 from peer.uploader import tracker_request
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,7 +61,13 @@ def main():
             if process.poll() is not None:
                 raise RuntimeError("Child stopped; see logs in data/local-check")
             try:
-                if predicate(tracker_request(tracker, payload, 1)):
+                # Startup retries are expected; don't print uploader failure traces.
+                request_id = str(uuid.uuid4())
+                with socket.create_connection(tracker, timeout=1) as connection:
+                    send_json(connection, {**payload, "request_id": request_id})
+                    response = recv_json(connection, timeout=1)
+                if (response.get("request_id") == request_id and
+                        response.get("ok") is True and predicate(response)):
                     return
             except (OSError, EOFError, ProtocolError):
                 pass
