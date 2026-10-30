@@ -1,8 +1,9 @@
 # Seeder tuần 1 — Lê Tiến Hưng
 
 Phạm vi: chia file, SHA-256 toàn file và từng chunk, đăng ký với Tracker,
-phục vụ `get_chunk` qua TCP. Server xử lý tuần tự, một request mỗi kết nối.
-Worker pool, throttling và heartbeat để các tuần sau.
+phục vụ `get_chunk` qua TCP. Bản tuần 1 xử lý tuần tự; từ tuần 2 đã có
+[worker pool](UPLOADER_WEEK2.md), vẫn một request mỗi kết nối.
+Throttling theo tốc độ và heartbeat để tuần 3.
 
 ## Chạy
 
@@ -36,8 +37,8 @@ Seeder gọi theo thứ tự, mỗi request mở một kết nối TCP:
    `total_chunks`, `chunks: [{chunk_index, chunk_hash}]`.
 3. `announce_chunks`: `peer_id`, `file_id`, `chunk_indexes`.
 
-**Điểm cần chốt với Huỳnh:** kế hoạch cũ để `announce_chunks` sang tuần 2,
-nhưng giao thức dùng request này để nối peer với chunk. Bản Seeder gọi API
+**Đã chốt trong Drive ngày 27/10/2026:** Tracker cần `announce_chunks` tối
+thiểu từ tuần 1 để nối peer với chunk. Bản Seeder gọi API
 này để Tracker có đủ dữ liệu trả `get_peers`; nếu Tracker chưa hỗ trợ thì
 khởi động sẽ báo lỗi rõ ràng. Không tự thêm `peer_id` vào `register_file`.
 Heartbeat chưa triển khai nên chưa phù hợp Tracker bắt buộc gia hạn TTL.
@@ -57,6 +58,5 @@ file nguồn thay đổi; file rỗng; đăng ký metadata với Tracker giả l
 Tracker và Leecher thật chưa có trong repo nên vẫn cần nhóm chạy tích hợp
 ba module để nghiệm thu mốc cuối tuần 1.
 
-Nguồn đối chiếu: README hiện tại và `docs/WORK_PLAN.md`, `docs/PROTOCOL.md`,
-`docs/TEAM_RULES.md` tại commit `43357b6`. Tài khoản Drive kết nối báo 404
-với thư mục nhóm, vì vậy chưa xác minh được tài liệu Drive có cập nhật mới.
+Nguồn đối chiếu: README, tài liệu nhóm trên Drive và bản giao thức trong lịch
+sử Git tại commit `43357b6`. Drive đã được đọc và cập nhật ngày 27/10/2026.

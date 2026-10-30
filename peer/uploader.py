@@ -1,13 +1,15 @@
-"""Week-one Seeder: python -m peer.uploader --help."""
+"""Seeder with a bounded worker pool: python -m peer.uploader --help."""
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import logging
 from pathlib import Path
 import socket
 import socketserver
+import threading
 import uuid
 
 from common.framing import ProtocolError, recv_json, send_json
@@ -115,29 +117,73 @@ class ChunkHandler(socketserver.BaseRequestHandler):
 
 
 class UploaderServer(socketserver.TCPServer):
-    """Sequential server for week one; worker pool belongs to week two."""
+    """Dispatch connections to a fixed pool with a bounded waiting queue.
+
+    Stop serve_forever (shutdown from another thread) before server_close.
+    Closing waits for accepted work; each connection has a socket timeout.
+    """
 
     allow_reuse_address = True
 
-    def __init__(self, address, shared_file: SharedFile, timeout_seconds: float = 5):
+    def __init__(self, address, shared_file: SharedFile, timeout_seconds: float = 5,
+                 *, max_workers: int = 4, max_pending: int = 16):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if type(max_workers) is not int or max_workers <= 0:
+            raise ValueError("max_workers must be a positive integer")
+        if type(max_pending) is not int or max_pending < 0:
+            raise ValueError("max_pending must be a nonnegative integer")
         self.shared_file = shared_file
         self.timeout_seconds = timeout_seconds
         super().__init__(address, ChunkHandler)
+        self._slots = threading.BoundedSemaphore(max_workers + max_pending)
+        self._executor = ThreadPoolExecutor(max_workers=max_workers,
+                                            thread_name_prefix="uploader")
+
+    def process_request(self, request, client_address):
+        # Never let a slow client block the accept loop or grow an unbounded queue.
+        if not self._slots.acquire(blocking=False):
+            LOG.warning("Uploader capacity reached client=%s; closing connection", client_address)
+            self.shutdown_request(request)
+            return
+        try:
+            self._executor.submit(self._serve_request, request, client_address)
+        except Exception:
+            self._slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def _serve_request(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            try:
+                self.shutdown_request(request)
+            finally:
+                self._slots.release()
+
+    def server_close(self):
+        super().server_close()
+        # TCPServer.__init__ can call server_close before the executor exists.
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=True)
 
 
 def main():
     from common.config import load_settings
 
     settings = load_settings()
-    parser = argparse.ArgumentParser(description="Share one file through the week-one Seeder")
+    parser = argparse.ArgumentParser(description="Share one file through the Seeder worker pool")
     parser.add_argument("file", type=Path)
     parser.add_argument("--peer-id", required=True)
     parser.add_argument("--host", default="127.0.0.1", help="Listen address")
     parser.add_argument("--advertise-host", help="Address reachable by other peers (required for wildcard binds)")
     parser.add_argument("--port", type=int, default=7001)
     parser.add_argument("--chunk-size", type=int, default=1024 * 1024)
+    parser.add_argument("--workers", type=int, default=4, help="Maximum concurrent connections")
+    parser.add_argument("--max-pending", type=int, default=16, help="Maximum waiting connections")
     parser.add_argument("--tracker-host", default=settings.tracker_host)
     parser.add_argument("--tracker-port", type=int, default=settings.tracker_port)
     parser.add_argument("--skip-tracker", action="store_true", help="Local peer testing only")
@@ -146,10 +192,13 @@ def main():
         parser.error("Wildcard bind requires --advertise-host")
     if not 1 <= args.port <= 65535 or not 1 <= args.tracker_port <= 65535:
         parser.error("Ports must be between 1 and 65535")
+    if args.workers <= 0 or args.max_pending < 0:
+        parser.error("--workers must be positive and --max-pending must be nonnegative")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         shared = SharedFile(args.file, args.chunk_size)
-        with UploaderServer((args.host, args.port), shared, settings.socket_timeout_seconds) as server:
+        with UploaderServer((args.host, args.port), shared, settings.socket_timeout_seconds,
+                            max_workers=args.workers, max_pending=args.max_pending) as server:
             if not args.skip_tracker:
                 tracker = (args.tracker_host, args.tracker_port)
                 tracker_request(tracker, {"type": "register_peer", "peer_id": args.peer_id,
@@ -161,8 +210,9 @@ def main():
                                           "file_id": shared.file_id,
                                           "chunk_indexes": list(range(len(shared.chunks)))},
                                 settings.socket_timeout_seconds)
-            LOG.info("Seeder peer_id=%s listening=%s:%s file_id=%s chunks=%s",
-                     args.peer_id, args.host, args.port, shared.file_id, len(shared.chunks))
+            LOG.info("Seeder peer_id=%s listening=%s:%s file_id=%s chunks=%s workers=%s max_pending=%s",
+                     args.peer_id, args.host, args.port, shared.file_id, len(shared.chunks),
+                     args.workers, args.max_pending)
             server.serve_forever()
     except KeyboardInterrupt:
         LOG.info("Seeder stopped peer_id=%s", args.peer_id)
