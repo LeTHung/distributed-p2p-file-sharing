@@ -44,6 +44,11 @@ Copy-Item .env.example .env
 
 Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `database/schema.sql`. Không commit `.env`, password, token hoặc file demo lớn.
 
+Có thể dùng [hướng dẫn PostgreSQL local](LOCAL_SETUP.md) và chạy
+`python -m scripts.setup_local` để tạo database/user, `.env` và schema;
+`python -m scripts.check_local` kiểm tra Tracker–Seeder bằng probe tải chunk.
+Mật khẩu quản trị được nhập tại terminal, không ghi vào code.
+
 ## Hợp đồng kỹ thuật không được tự ý đổi
 
 - `file_id` là SHA-256 hex chữ thường của toàn bộ nội dung file.
