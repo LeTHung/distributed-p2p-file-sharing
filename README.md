@@ -56,9 +56,21 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 ## Cách làm việc
 
 1. Lấy issue được giao theo tuần trên GitHub.
-2. Tạo branch `feature/<mo-ta>` từ `main`.
-3. Mỗi pull request chỉ làm một việc, ghi rõ cách kiểm tra.
+2. Cập nhật `develop`, tạo branch `feature/<mo-ta>` từ `develop`.
+3. Mỗi pull request vào `develop` chỉ làm một việc, ghi rõ cách kiểm tra.
 4. Có một thành viên khác review trước khi merge.
-5. Không push trực tiếp lên `main`.
+5. Không push trực tiếp lên `main`/`develop`. Lê Tiến Hưng quyết định merge; chỉ đưa `develop` vào `main` sau khi nghiệm thu tích hợp.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
+
+## Seeder tuần 2
+
+Seeder dùng worker pool, mặc định 4 kết nối đang xử lý và tối đa 16 kết nối
+chờ. Chạy từ thư mục gốc (thêm `--skip-tracker` để kiểm tra riêng):
+
+```powershell
+python -m peer.uploader samples/README.md --peer-id seeder-hung --workers 4 --max-pending 16
+python -m unittest discover -s tests -v
+```
+
+Xem [hướng dẫn worker pool và demo hai Seeder](peer/UPLOADER_WEEK2.md).
