@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import psycopg
@@ -37,18 +37,25 @@ class Directory:
                                 (self.ttl,)).rowcount
 
     @staticmethod
-    def _file(conn, file_id: str) -> dict[str, Any]:
+    def _public_file(row: dict[str, Any]) -> dict[str, Any]:
+        # Older registrations could contain a local path. Return only a display
+        # name on every directory endpoint, without modifying persisted metadata.
+        name = PureWindowsPath(row["file_name"]).name
+        return {**row, "file_name": name if name not in ("", ".", "..") else row["file_id"]}
+
+    @classmethod
+    def _file(cls, conn, file_id: str) -> dict[str, Any]:
         row = conn.execute("SELECT file_id, file_name, file_size, chunk_size, total_chunks FROM files WHERE file_id=%s",
                            (file_id,)).fetchone()
         if row is None:
             raise RequestError("FILE_NOT_FOUND", "File is not registered")
-        return row
+        return cls._public_file(row)
 
     @staticmethod
     def _indexes(request, metadata):
         indexes = request.get("chunk_indexes")
-        if indexes and indexes[-1] >= metadata["total_chunks"]:
-            raise RequestError("CHUNK_NOT_FOUND", "Chunk index is outside the file")
+        if indexes and any(index >= metadata["total_chunks"] for index in indexes):
+            raise RequestError("INVALID_REQUEST", "Chunk index is outside the file")
         return indexes
 
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -95,6 +102,8 @@ class Directory:
                              (r["peer_id"], self.ttl)).fetchone()
         if peer is None:
             raise RequestError("PEER_NOT_FOUND", "Peer must register before announcing chunks")
+        # Validate the entire batch before inserting any ownership. The enclosing
+        # connection context also rolls back all inserts if a later SQL error occurs.
         self._indexes(r, self._file(conn, r["file_id"]))
         with conn.cursor() as cursor:
             cursor.executemany("""INSERT INTO peer_chunks (peer_id,file_id,chunk_index) VALUES (%s,%s,%s)
@@ -114,10 +123,11 @@ class Directory:
                              AND (%s::integer[] IS NULL OR pc.chunk_index=ANY(%s::integer[]))
                            GROUP BY p.peer_id ORDER BY p.peer_id""",
                            (r["file_id"], self.ttl, r.get("peer_id"), r.get("peer_id"), indexes, indexes)).fetchall()
-        # Additional metadata fields let a Leecher verify hashes without direct DB access.
+        # The shared contract places full metadata under `file`, independently
+        # of the subset of chunk indexes requested for source lookup.
         metadata["chunks"] = conn.execute("SELECT chunk_index,chunk_hash FROM chunks WHERE file_id=%s ORDER BY chunk_index",
                                           (r["file_id"],)).fetchall()
-        return {**metadata, "peers": rows}
+        return {"file_id": metadata["file_id"], "file": metadata, "peers": rows}
 
     def _heartbeat(self, conn, r):
         row = conn.execute("""UPDATE peers SET last_seen=clock_timestamp() WHERE peer_id=%s
@@ -134,9 +144,10 @@ class Directory:
         return row
 
     def _list_files(self, conn, r):
+        # EXISTS keeps a file unique even when many peers own several chunks.
         rows = conn.execute("""SELECT f.file_id,f.file_name,f.file_size,f.chunk_size,f.total_chunks FROM files f
                            WHERE EXISTS (SELECT 1 FROM peer_chunks pc JOIN peers p USING (peer_id)
                              WHERE pc.file_id=f.file_id AND p.status='active'
                              AND p.last_seen > clock_timestamp() - %s * INTERVAL '1 second')
                            ORDER BY f.file_name,f.file_id""", (self.ttl,)).fetchall()
-        return {"files": rows}
+        return {"files": [self._public_file(row) for row in rows]}
