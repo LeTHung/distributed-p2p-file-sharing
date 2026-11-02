@@ -10,3 +10,4 @@ downloads/
 shared/
 *.part
 *.torrent.json
+.agents
