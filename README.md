@@ -56,10 +56,10 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 ## Cách làm việc
 
 1. Lấy issue được giao theo tuần trên GitHub.
-2. Tạo branch `feature/<mo-ta>` từ `main`.
+2. Tạo branch `feature/<mo-ta>` từ `develop` đã cập nhật.
 3. Mỗi pull request chỉ làm một việc, ghi rõ cách kiểm tra.
-4. Có một thành viên khác review trước khi merge.
-5. Không push trực tiếp lên `main`.
+4. Nhóm trưởng Lê Tiến Hưng review và quyết định merge, không yêu cầu thêm người review.
+5. PR feature vào `develop`; sau nghiệm thu tích hợp mới đưa `develop` vào `main`. Không push trực tiếp hai nhánh này.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
 
@@ -78,6 +78,9 @@ sách đã nhận; chưa có tải song song/ghép toàn file hoặc hỏi lại
 
 Thử riêng với Seeder bằng `--peer-host 127.0.0.1 --peer-port 7001`
 và bắt buộc `--expected-hash <chunk_hash>`; thiếu hash sẽ bị từ chối.
-Tracker hiện có TTL 20 giây nhưng Seeder chưa gửi heartbeat, nên cần chạy
-Leecher ngay sau Seeder khi demo tuần 1. Heartbeat và vòng đời peer còn phải
-đồng bộ trước demo dài. Không xem test tải một chunk là nghiệm thu đa nguồn.
+Seeder gửi heartbeat theo cấu hình (mặc định 5 giây), nên vẫn được tìm thấy
+sau TTL 20 giây khi đang chạy. Ctrl+C dừng phục vụ và unregister; nếu bị tắt
+cưỡng bức, Tracker loại peer theo TTL. Khi heartbeat lỗi, Seeder thử đăng ký
+và announce lại toàn bộ nguồn. Không xem test tải một chunk là nghiệm thu đa nguồn.
+
+Xem [kịch bản nghiệm thu tuần 1](WEEK1_DEMO.md) để chạy ba terminal và lưu log.
