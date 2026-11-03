@@ -9,6 +9,7 @@ import tempfile
 import threading
 from typing import cast
 import unittest
+from unittest.mock import patch
 
 from common.framing import recv_json, send_json
 from peer.downloader import (
@@ -17,6 +18,7 @@ from peer.downloader import (
     fetch_chunk_from_peer,
     save_chunk,
     verify_chunk_integrity,
+    query_tracker,
 )
 from peer.uploader import SharedFile, UploaderServer
 
@@ -134,6 +136,55 @@ class DownloaderTests(unittest.TestCase):
 
         self.assertTrue(saved_file.exists())
         self.assertEqual(saved_file.read_bytes(), self.sample_data[10:20])
+
+    def test_rejects_unsafe_ids_and_unverified_direct_download(self):
+        for file_id, index in [("../escape", 0), (self.shared_file.file_id, -1),
+                               (self.shared_file.file_id, True)]:
+            with self.subTest(file_id=file_id, index=index), self.assertRaises(DownloadError):
+                download_single_chunk(file_id, index, direct_peer_address=get_server_addr(self.seeder_server))
+        with self.assertRaisesRegex(DownloadError, "expected_hash"):
+            download_single_chunk(self.shared_file.file_id,
+                                  direct_peer_address=get_server_addr(self.seeder_server))
+
+    def test_rejects_advertised_length_before_reading_body(self):
+        with self.assertRaisesRegex(DownloadError, "data_length"):
+            fetch_chunk_from_peer(get_server_addr(self.seeder_server), self.shared_file.file_id,
+                                  0, expected_length=9)
+
+    def test_tracker_top_level_metadata_is_compatible(self):
+        # Use the real Tracker TCP handler with Directory's current response shape.
+        from tracker.server import TrackerServer
+        directory = unittest.mock.Mock()
+        directory.execute.return_value = {**self.shared_file.metadata(), "peers": [{
+            "peer_id": "seeder", "host": "127.0.0.1",
+            "port": get_server_addr(self.seeder_server)[1], "chunk_indexes": [0, 1, 2]}]}
+        with TrackerServer(("127.0.0.1", 0), directory) as tracker:
+            thread = threading.Thread(target=tracker.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = download_single_chunk(self.shared_file.file_id, 2,
+                                               output_dir=Path(self.temp_dir.name) / "real-handler",
+                                               tracker_address=get_server_addr(tracker))
+                self.assertEqual(result.read_bytes(), self.sample_data[20:])
+            finally:
+                tracker.shutdown()
+                thread.join(2)
+
+    def test_invalid_tracker_metadata_is_rejected(self):
+        invalid_metadata = [None, {**self.shared_file.metadata(), "chunks": []},
+                            {**self.shared_file.metadata(), "file_id": "0" * 64}]
+        for metadata in invalid_metadata:
+            with self.subTest(metadata=metadata), patch("peer.downloader.recv_json") as receive:
+                # Only network I/O is mocked; request correlation uses the real generated ID.
+                def response(*args, **kwargs):
+                    return {"request_id": sent[0]["request_id"], "ok": True,
+                            "file": metadata, "peers": []}
+                sent = []
+                receive.side_effect = response
+                with patch("peer.downloader.socket.create_connection"), \
+                     patch("peer.downloader.send_json", side_effect=lambda sock, data: sent.append(data)):
+                    with self.assertRaises(DownloadError):
+                        query_tracker(("127.0.0.1", 9000), self.shared_file.file_id)
 
     def test_full_flow_with_mock_tracker(self):
         """Kiểm tra toàn bộ luồng tích hợp: Leecher -> Tracker -> Seeder -> Leecher."""

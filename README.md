@@ -62,3 +62,22 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 5. Không push trực tiếp lên `main`.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
+
+## Leecher tuần 1
+
+Sau khi Tracker và Seeder đã chạy, lấy `file_id` từ log Seeder rồi tải một chunk:
+
+```powershell
+python -m peer.downloader <file_id> --chunk-index 0 --output-dir downloads
+```
+
+Kết quả nằm ở `downloads/<file_id>/0.part`, chỉ lưu sau khi đúng độ dài và SHA-256.
+Leecher nhận được cả metadata top-level của Tracker hiện tại lẫn trường `file`
+theo hợp đồng Drive. Nếu nguồn lỗi hoặc hash sai, thử peer tiếp theo trong danh
+sách đã nhận; chưa có tải song song/ghép toàn file hoặc hỏi lại Tracker khi hết nguồn.
+
+Thử riêng với Seeder bằng `--peer-host 127.0.0.1 --peer-port 7001`
+và bắt buộc `--expected-hash <chunk_hash>`; thiếu hash sẽ bị từ chối.
+Tracker hiện có TTL 20 giây nhưng Seeder chưa gửi heartbeat, nên cần chạy
+Leecher ngay sau Seeder khi demo tuần 1. Heartbeat và vòng đời peer còn phải
+đồng bộ trước demo dài. Không xem test tải một chunk là nghiệm thu đa nguồn.
