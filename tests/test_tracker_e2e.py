@@ -54,7 +54,7 @@ class MultiProcessTests(unittest.TestCase):
                "POSTGRES_PORT": config.get("port", "5432"), "POSTGRES_DB": database,
                "POSTGRES_USER": config.get("user", ""), "POSTGRES_PASSWORD": config.get("password", ""),
                "TRACKER_HOST": "127.0.0.1", "TRACKER_PORT": str(tracker_port),
-               "SOCKET_TIMEOUT_SECONDS": "3", "HEARTBEAT_INTERVAL_SECONDS": "5", "PEER_TTL_SECONDS": "20"}
+               "SOCKET_TIMEOUT_SECONDS": "3", "HEARTBEAT_INTERVAL_SECONDS": "1", "PEER_TTL_SECONDS": "6"}
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         log_dir = Path(os.getenv("TRACKER_TEST_LOG_DIR", folder.name))
@@ -106,6 +106,12 @@ class MultiProcessTests(unittest.TestCase):
         tracker.wait(timeout=10)
         tracker = start("e2e-tracker-after-restart", ["-m", "tracker.server"])
         ready(tracker, query, lambda r: r["ok"] and len(r["peers"]) == 1)
+        # More than a full TTL: the Seeder must remain discoverable through
+        # actual heartbeat RPCs before the real Leecher asks for a chunk.
+        time.sleep(8)
+        live = rpc(("127.0.0.1", tracker_port), query)
+        self.assertEqual(len(live["peers"]), 1)
+        self.assertEqual(live["file"], metadata)
         probe = subprocess.run([sys.executable, str(ROOT / "tests" / "fixtures" / "chunk_probe.py"),
                                 "--tracker-port", str(tracker_port), "--file-id", metadata["file_id"]],
                                cwd=ROOT, env=env, capture_output=True, text=True, timeout=15, check=True)

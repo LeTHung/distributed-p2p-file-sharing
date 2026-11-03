@@ -117,7 +117,9 @@ class Directory:
         # Additional metadata fields let a Leecher verify hashes without direct DB access.
         metadata["chunks"] = conn.execute("SELECT chunk_index,chunk_hash FROM chunks WHERE file_id=%s ORDER BY chunk_index",
                                           (r["file_id"],)).fetchall()
-        return {**metadata, "peers": rows}
+        # Keep the old top-level fields for existing clients and expose the
+        # canonical nested metadata defined in the shared Drive contract.
+        return {**metadata, "file": metadata, "peers": rows}
 
     def _heartbeat(self, conn, r):
         row = conn.execute("""UPDATE peers SET last_seen=clock_timestamp() WHERE peer_id=%s

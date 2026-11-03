@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import logging
 from pathlib import Path
 import socket
 import socketserver
+import signal
+import threading
 import uuid
 
 from common.framing import ProtocolError, recv_json, send_json
+from peer.uploader_lifecycle import SeederRegistration
 
 LOG = logging.getLogger(__name__)
 
@@ -57,7 +61,7 @@ def tracker_request(address: tuple[str, int], payload: dict, timeout: float) -> 
     try:
         with socket.create_connection(address, timeout=timeout) as connection:
             send_json(connection, request)
-            response = recv_json(connection)
+            response = recv_json(connection, timeout=timeout)
         if response.get("request_id") != request["request_id"]:
             raise ProtocolError("Tracker response request_id does not match")
         if response.get("ok") is not True:
@@ -74,7 +78,7 @@ class ChunkHandler(socketserver.BaseRequestHandler):
         self.request.settimeout(self.server.timeout_seconds)
         request_id = None
         try:
-            request = recv_json(self.request)
+            request = recv_json(self.request, timeout=self.server.timeout_seconds)
             request_id = request.get("request_id")
             if (request.get("type") != "get_chunk" or
                     not isinstance(request_id, str) or not request_id or
@@ -149,20 +153,22 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         shared = SharedFile(args.file, args.chunk_size)
-        with UploaderServer((args.host, args.port), shared, settings.socket_timeout_seconds) as server:
+        with UploaderServer((args.host, args.port), shared, settings.socket_timeout_seconds) as server, ExitStack() as lifecycle:
             if not args.skip_tracker:
                 tracker = (args.tracker_host, args.tracker_port)
-                tracker_request(tracker, {"type": "register_peer", "peer_id": args.peer_id,
-                                          "host": args.advertise_host or args.host, "port": args.port},
-                                settings.socket_timeout_seconds)
-                tracker_request(tracker, {"type": "register_file", **shared.metadata()},
-                                settings.socket_timeout_seconds)
-                tracker_request(tracker, {"type": "announce_chunks", "peer_id": args.peer_id,
-                                          "file_id": shared.file_id,
-                                          "chunk_indexes": list(range(len(shared.chunks)))},
-                                settings.socket_timeout_seconds)
+                lifecycle.enter_context(SeederRegistration(
+                    lambda payload: tracker_request(tracker, payload, settings.socket_timeout_seconds),
+                    shared, args.peer_id, args.advertise_host or args.host, args.port,
+                    settings.heartbeat_interval_seconds))
             LOG.info("Seeder peer_id=%s listening=%s:%s file_id=%s chunks=%s",
                      args.peer_id, args.host, args.port, shared.file_id, len(shared.chunks))
+            # Stop the accept loop before leaving the context and unregistering.
+            # shutdown must be called from another thread than serve_forever.
+            def stop(signum, frame):
+                threading.Thread(target=server.shutdown, name="seeder-stop").start()
+
+            signal.signal(signal.SIGINT, stop)
+            signal.signal(signal.SIGTERM, stop)
             server.serve_forever()
     except KeyboardInterrupt:
         LOG.info("Seeder stopped peer_id=%s", args.peer_id)
