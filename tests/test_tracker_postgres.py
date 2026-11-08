@@ -391,10 +391,12 @@ class PostgreSQLTests(unittest.TestCase):
         base = {"type": "get_peers", "file_id": self.metadata["file_id"]}
         with running_server(self.directory) as server:
             response = rpc(server.server_address, {**base, "chunk_indexes": [2, 1, 1]})
-            self.assertEqual(set(response), {"request_id", "ok", "file_id", "file", "peers"})
+            self.assertTrue({"request_id", "ok", "file_id", "file", "peers"}.issubset(response))
             self.assertTrue(response["ok"])
             self.assertEqual(response["file_id"], self.metadata["file_id"])
             self.assertEqual(response["file"], self.metadata)
+            # `develop` keeps legacy top-level metadata fields for existing clients.
+            self.assertEqual({key: response[key] for key in self.metadata}, self.metadata)
             self.assertEqual([(p["peer_id"], p["chunk_indexes"]) for p in response["peers"]],
                              [("a", [1]), ("b", [1, 2])])
             all_chunks = rpc(server.server_address, base)

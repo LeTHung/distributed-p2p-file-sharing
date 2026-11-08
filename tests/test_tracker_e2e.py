@@ -49,11 +49,12 @@ class MultiProcessTests(unittest.TestCase):
         while seeder_port == tracker_port:
             seeder_port = free_port()
         config = conninfo_to_dict(dsn)
-        env = {**os.environ, "PYTHONPATH": str(ROOT), "POSTGRES_HOST": config.get("host", "127.0.0.1"),
+        env = {**os.environ, "PYTHONPATH": str(ROOT), "PYTHONIOENCODING": "utf-8",
+               "POSTGRES_HOST": config.get("host", "127.0.0.1"),
                "POSTGRES_PORT": config.get("port", "5432"), "POSTGRES_DB": database,
                "POSTGRES_USER": config.get("user", ""), "POSTGRES_PASSWORD": config.get("password", ""),
                "TRACKER_HOST": "127.0.0.1", "TRACKER_PORT": str(tracker_port),
-               "SOCKET_TIMEOUT_SECONDS": "3", "HEARTBEAT_INTERVAL_SECONDS": "5", "PEER_TTL_SECONDS": "20"}
+               "SOCKET_TIMEOUT_SECONDS": "3", "HEARTBEAT_INTERVAL_SECONDS": "1", "PEER_TTL_SECONDS": "6"}
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         log_dir = Path(os.getenv("TRACKER_TEST_LOG_DIR", folder.name))
@@ -105,6 +106,12 @@ class MultiProcessTests(unittest.TestCase):
         tracker.wait(timeout=10)
         tracker = start("e2e-tracker-after-restart", ["-m", "tracker.server"])
         ready(tracker, query, lambda r: r["ok"] and len(r["peers"]) == 1)
+        # More than a full TTL: the Seeder must remain discoverable through
+        # actual heartbeat RPCs before the real Leecher asks for a chunk.
+        time.sleep(8)
+        live = rpc(("127.0.0.1", tracker_port), query)
+        self.assertEqual(len(live["peers"]), 1)
+        self.assertEqual(live["file"], metadata)
         probe = subprocess.run([sys.executable, str(ROOT / "tests" / "fixtures" / "chunk_probe.py"),
                                 "--tracker-port", str(tracker_port), "--file-id", metadata["file_id"]],
                                cwd=ROOT, env=env, capture_output=True, text=True, timeout=15, check=True)
@@ -113,3 +120,16 @@ class MultiProcessTests(unittest.TestCase):
         self.assertEqual(report["bytes"], len(data))
         self.assertEqual(report["file_id"], hashlib.sha256(data).hexdigest())
         (log_dir / "e2e-probe.json").write_text(probe.stdout, encoding="utf-8")
+        # Also verify Student 3's actual CLI against PostgreSQL + restarted Tracker
+        # + Student 2's actual Seeder, including the short final chunk.
+        download_dir = Path(folder.name) / "leecher"
+        leecher = subprocess.run([sys.executable, "-m", "peer.downloader", metadata["file_id"],
+                                  "--chunk-index", str(metadata["total_chunks"] - 1),
+                                  "--tracker-port", str(tracker_port),
+                                  "--output-dir", str(download_dir)], cwd=ROOT, env=env,
+                                 capture_output=True, timeout=15)
+        (log_dir / "e2e-leecher.log").write_bytes(leecher.stdout + leecher.stderr)
+        self.assertEqual(leecher.returncode, 0, "Leecher CLI failed; inspect e2e-leecher.log")
+        final_index = metadata["total_chunks"] - 1
+        saved = download_dir / metadata["file_id"] / f"{final_index}.part"
+        self.assertEqual(saved.read_bytes(), data[final_index * 1024:])
