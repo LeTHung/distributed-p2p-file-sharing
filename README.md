@@ -25,12 +25,13 @@ Tài liệu kế hoạch, quy tắc, giao thức và demo được lưu trên [G
 ## Cấu trúc code
 
 ```text
-common/      # framing TCP, cấu hình và các tiện ích dùng chung
+common/      # framing TCP, cấu hình, metadata và heartbeat client dùng chung
 tracker/     # Student 1 triển khai Tracker và lớp truy cập PostgreSQL
 peer/        # Student 2 và Student 3 triển khai Seeder và Leecher
 database/    # Schema PostgreSQL
 tests/       # Test tự động cho các thành phần dùng chung
 samples/     # Chỉ file mẫu nhỏ, vô hại
+docs/        # Protocol TCP/JSON, handover Tracker tuần 3–4 và hướng dẫn demo
 ```
 
 ## Khởi động môi trường
@@ -42,7 +43,7 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `database/schema.sql`. Không commit `.env`, password, token hoặc file demo lớn.
+Tạo database `p2p_tracker`, điền thông tin kết nối trong `.env`, rồi khởi tạo schema bằng `python -m tracker.server --init-db-only`. Lệnh này gọi migration idempotent trong `database/schema.sql`; không cần chạy SQL thủ công. Không commit `.env`, password, token hoặc file demo lớn.
 
 ## Hợp đồng kỹ thuật không được tự ý đổi
 
@@ -56,9 +57,9 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 ## Cách làm việc
 
 1. Lấy issue được giao theo tuần trên GitHub.
-2. Tạo branch `feature/<mo-ta>` từ `develop` đã cập nhật.
-3. Mỗi pull request chỉ làm một việc, ghi rõ cách kiểm tra.
-4. Nhóm trưởng Lê Tiến Hưng review và quyết định merge, không yêu cầu thêm người review.
+2. Cập nhật `develop` bằng `git pull --ff-only origin develop`, rồi tạo branch `feature/<mo-ta>` hoặc `fix/<mo-ta>` từ `develop`.
+3. Mỗi pull request chỉ làm một việc, ghi rõ cách chạy và kết quả kiểm tra.
+4. Có ít nhất một thành viên khác review trước khi merge; Lê Tiến Hưng quyết định và thực hiện merge.
 5. PR feature vào `develop`; sau nghiệm thu tích hợp mới đưa `develop` vào `main`. Không push trực tiếp hai nhánh này.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
@@ -84,3 +85,17 @@ cưỡng bức, Tracker loại peer theo TTL. Khi heartbeat lỗi, Seeder thử 
 và announce lại toàn bộ nguồn. Không xem test tải một chunk là nghiệm thu đa nguồn.
 
 Xem [kịch bản nghiệm thu tuần 1](WEEK1_DEMO.md) để chạy ba terminal và lưu log.
+
+## Heartbeat và kiểm tra tuần 3–4
+
+Tracker dùng `HEARTBEAT_INTERVAL_SECONDS=5`, `PEER_TTL_SECONDS=20` và `TRACKER_CLEANUP_INTERVAL_SECONDS=5` theo `.env.example`. Các truy vấn directory loại peer hết TTL ngay cả khi cleanup nền chưa chạy. Cleanup xóa peer cùng `peer_chunks` theo cascade, còn metadata file/chunk vẫn được giữ.
+
+Sau khi `register_peer` thành công, peer có thể dùng `common.heartbeat.PeerHeartbeat` để gửi heartbeat theo cùng giao thức TCP/JSON. Lỗi `PEER_NOT_FOUND` nghĩa là peer hết TTL hoặc không còn được đăng ký: thành phần quản lý peer phải đăng ký lại rồi công bố lại toàn bộ chunk ownership hiện có. Helper chỉ gửi heartbeat; nó không tự đoán endpoint hoặc ownership. Callback chạy trên heartbeat thread, vì vậy hãy đưa công việc phục hồi vào hàng đợi/lifecycle worker thay vì thực hiện nhiều RPC đồng bộ trong callback.
+
+Student 2's current Seeder already has its own `SeederRegistration` lifecycle: it retries `register_peer`, `register_file` and `announce_chunks` after a Tracker RPC failure, and unregisters on normal shutdown. Student 3's current Downloader fetches one chunk and does not host chunks, so it has no peer heartbeat lifecycle yet.
+
+Tracker tự khởi tạo schema khi chạy `python -m tracker.server --init-db-only`. Hướng dẫn chạy và phạm vi demo hiện có nằm trong [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md); kết quả kiểm tra và các phụ thuộc tích hợp nằm trong [docs/TRACKER_WEEK3_4.md](docs/TRACKER_WEEK3_4.md).
+
+Hợp đồng TCP/JSON hiện tại, gồm framing, RPC, metadata, lỗi và các khác biệt implementation đã biết, được ghi tại [docs/PROTOCOL.md](docs/PROTOCOL.md). Tài liệu này phải được cập nhật cùng `04_Giao_thuc_TCP_JSON.docx` theo quy tắc nhóm.
+
+Full suite mới nhất (9/11/2026): **80 passed, 0 failed, 0 skipped**. Các mốc trước đó được giữ trong handover: 76 trước T01, 75 trước sửa thời gian chờ shutdown heartbeat, 74 trước E2E phục hồi Uploader, và 70 là mốc lịch sử. Kết quả và giới hạn tích hợp được ghi trong [docs/TRACKER_WEEK3_4.md](docs/TRACKER_WEEK3_4.md), lệnh chạy nằm trong [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md).

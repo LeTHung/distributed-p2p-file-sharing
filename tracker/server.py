@@ -33,18 +33,25 @@ class TrackerHandler(socketserver.BaseRequestHandler):
         try:
             request = recv_json(self.request, timeout=self.server.timeout_seconds)
         except ProtocolError:
-            LOG.warning("Invalid JSON frame from %s request_id=None", self.client_address[0])
-            self.reply(error_response(None, "INVALID_REQUEST", "Invalid JSON frame"))
+            self.log_invalid_frame("ProtocolError")
+            self.reply(error_response(None, "INVALID_REQUEST", "Invalid request frame"))
             return
-        except (EOFError, OSError):
+        except (EOFError, OSError) as error:
+            # The frame is incomplete, so the request ID is not trustworthy.
+            # Try one safe error reply; reply() logs and absorbs a dead socket.
+            self.log_invalid_frame(type(error).__name__)
+            self.reply(error_response(None, "INVALID_REQUEST", "Incomplete request frame"))
             return
         request_id = request.get("request_id")
-        if not isinstance(request_id, str) or len(request_id) > 256:
+        if (not isinstance(request_id, str) or not request_id.strip() or
+                len(request_id) > 256 or "\0" in request_id):
             request_id = None
         try:
             result = self.server.directory.execute(validate_request(request))
             response = {**result, "request_id": request_id, "ok": True}
         except RequestError as error:
+            if error.code == "INVALID_REQUEST" and request_id is None:
+                self.log_invalid_frame("missing_or_invalid_request_id")
             response = error_response(request_id, error.code, str(error))
         except psycopg.Error as error:
             # Never log a DSN, password, raw SQL, or user-supplied error text.
@@ -55,19 +62,25 @@ class TrackerHandler(socketserver.BaseRequestHandler):
             response = error_response(request_id, "INTERNAL_ERROR", "Tracker operation failed")
         self.reply(response)
 
+    def log_invalid_frame(self, cause):
+        LOG.warning("Tracker request rejected error_code=INVALID_REQUEST remote=%r "
+                    "request_id=None cause=%s", self.client_address, cause)
+
     def reply(self, response):
-        self.request.settimeout(self.server.timeout_seconds)
         try:
+            self.request.settimeout(self.server.timeout_seconds)
             send_json(self.request, response)
             return True
         except ProtocolError:
             try:
                 send_json(self.request, error_response(response.get("request_id"), "INTERNAL_ERROR",
                                                        "Response exceeds the control message limit"))
-            except OSError:
-                pass
-        except OSError:
-            pass
+            except OSError as error:
+                LOG.warning("Tracker response send failed remote=%s request_id=%r error=%s",
+                            self.client_address[0], response.get("request_id"), type(error).__name__)
+        except OSError as error:
+            LOG.warning("Tracker response send failed remote=%s request_id=%r error=%s",
+                        self.client_address[0], response.get("request_id"), type(error).__name__)
         return False
 
 
