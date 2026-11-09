@@ -133,3 +133,21 @@ class MultiProcessTests(unittest.TestCase):
         final_index = metadata["total_chunks"] - 1
         saved = download_dir / metadata["file_id"] / f"{final_index}.part"
         self.assertEqual(saved.read_bytes(), data[final_index * 1024:])
+        # Hard-stop Seeder: no unregister packet. After TTL the source must
+        # disappear, then the same peer ID/port must re-register all chunks.
+        seeder.terminate()
+        seeder.wait(timeout=10)
+        time.sleep(7)
+        self.assertEqual(rpc(("127.0.0.1", tracker_port), query)["peers"], [])
+        seeder = start("e2e-uploader-restarted", ["-c", runner, UPLOADER, str(source),
+                       "--peer-id", "actual-uploader", "--port", str(seeder_port),
+                       "--chunk-size", "1024"])
+        ready(seeder, query, lambda r: r["ok"] and len(r["peers"]) == 1
+              and r["peers"][0]["chunk_indexes"] == list(range(metadata["total_chunks"])))
+        resumed = subprocess.run([sys.executable, "-m", "peer.downloader", metadata["file_id"],
+                                  "--chunk-index", "0", "--tracker-port", str(tracker_port),
+                                  "--output-dir", str(download_dir)], cwd=ROOT, env=env,
+                                 capture_output=True, timeout=15)
+        (log_dir / "e2e-leecher-after-seeder-restart.log").write_bytes(resumed.stdout + resumed.stderr)
+        self.assertEqual(resumed.returncode, 0)
+        self.assertEqual((download_dir / metadata["file_id"] / "0.part").read_bytes(), data[:1024])

@@ -84,3 +84,15 @@ cưỡng bức, Tracker loại peer theo TTL. Khi heartbeat lỗi, Seeder thử 
 và announce lại toàn bộ nguồn. Không xem test tải một chunk là nghiệm thu đa nguồn.
 
 Xem [kịch bản nghiệm thu tuần 1](WEEK1_DEMO.md) để chạy ba terminal và lưu log.
+
+## Seeder tuần 3
+
+Seeder có worker pool và giới hạn tốc độ payload chung cho mọi worker:
+
+```powershell
+python -m peer.uploader samples/README.md --peer-id seeder-hung --port 7001 --workers 4 --max-pending 16 --upload-rate 131072 --chunk-size 65536
+```
+
+`--upload-rate` tính bằng bytes/giây (0 là unlimited). Ctrl+C hủy transfer
+đang chạy và unregister; bật lại cùng ID/port sẽ đăng ký và announce lại.
+Xem [hướng dẫn upload policy, timeout và demo restart](peer/UPLOADER_WEEK3.md).
