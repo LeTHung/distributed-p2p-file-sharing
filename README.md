@@ -94,3 +94,14 @@ python -m peer.downloader <file_id> --workers 4 --output-dir downloads
 ```
 
 Kết quả file hoàn chỉnh được lưu tại `downloads/<file_id>/<file_name>` sau khi mã băm khớp với `file_id`. Các file `.part` tạm thời sẽ được tự động dọn dẹp sau khi ghép thành công.
+
+## Leecher tuần 3
+
+Hỗ trợ cơ chế chịu lỗi (Dynamic Failover) khi Seeder bị tắt giữa chừng và công bố chunk đã tải:
+
+```powershell
+python -m peer.downloader <file_id> --workers 4 --peer-id leecher-hung --output-dir downloads
+```
+
+- **Dynamic Failover:** Khi một Seeder gặp lỗi hoặc timeout, Leecher ghi nhận `[FAILOVER]` và tự động chuyển sang Seeder dự phòng. Nếu toàn bộ Seeder trong cache thất bại, Leecher tự động hỏi lại Tracker để tìm nguồn mới.
+- **Chunk Announcement:** Sau khi tải và xác thực thành công từng chunk, Leecher tự động gửi RPC `announce_chunks` lên Tracker (khi có `--peer-id`) để công bố mình là peer nguồn.
