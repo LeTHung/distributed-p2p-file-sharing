@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import concurrent.futures
 import logging
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import os
+import tempfile
 import socket
 import time
 from typing import Any
@@ -261,7 +263,7 @@ def _validate_full_file_request(
         raise DownloadError("file_id phải là SHA-256 hex chữ thường, đủ 64 ký tự")
     if tracker_address is None:
         raise ValueError("Cần cung cấp tracker_address")
-    if max_workers < 1:
+    if type(max_workers) is not int or max_workers < 1:
         raise ValueError("max_workers phải >= 1")
     return tracker_address
 
@@ -315,6 +317,10 @@ def _build_chunk_peer_map(
         peer_id = peer.get("peer_id", f"{host}:{port}")
         for chunk_index in peer.get("chunk_indexes", []):
             chunk_to_peers.setdefault(chunk_index, []).append((host, port, peer_id))
+    # Rotate the first source per chunk even when every Seeder owns the full file.
+    for index, sources in chunk_to_peers.items():
+        offset = index % len(sources)
+        chunk_to_peers[index] = sources[offset:] + sources[:offset]
     return chunk_to_peers
 
 
@@ -435,29 +441,41 @@ def reassemble_file(
     Xóa file nếu hash không khớp và raise DownloadError.
     Xóa các file .part sau khi ghép thành công.
     """
-    final_path = parts_dir / file_name
+    # A display name received over the network is never an arbitrary path.
+    if (not isinstance(file_name, str) or file_name in ("", ".", "..") or
+            PureWindowsPath(file_name).name != file_name or
+            PureWindowsPath(file_name).is_reserved() or
+            file_name.endswith((".", " ")) or
+            any(ord(c) < 32 or c in '<>:"/\\|?*' for c in file_name)):
+        raise DownloadError("file_name must be a safe base name")
+    root = Path(parts_dir).resolve()
+    completed = root / "completed"
+    if not completed.resolve().is_relative_to(root):
+        raise DownloadError("Output directory escapes the download directory")
+    completed.mkdir(parents=True, exist_ok=True)
+    final_path = completed / file_name
     hasher = hashlib.sha256()
-
-    LOG.info("Bắt đầu ghép %d chunk → %s", total_chunks, final_path)
-
-    # Ghi tuần tự từng chunk vào file đích, đồng thời tính SHA-256
-    with final_path.open("wb") as out:
-        for idx in range(total_chunks):
-            part_file = parts_dir / f"{idx}.part"
-            if not part_file.exists():
-                raise DownloadError(f"Thiếu file chunk {part_file}")
-            data = part_file.read_bytes()
-            hasher.update(data)
-            out.write(data)
-
-    actual_hash = hasher.hexdigest()
-    if actual_hash != file_id:
-        final_path.unlink(missing_ok=True)
-        raise DownloadError(
-            f"SHA-256 toàn file không khớp!\n"
-            f"  Kỳ vọng: {file_id}\n"
-            f"  Thực tế: {actual_hash}"
-        )
+    temporary = None
+    try:
+        # Keep outputs separate from .part files and replace only after hash
+        # verification. A failed retry must not truncate an existing good file.
+        with tempfile.NamedTemporaryFile(dir=completed, prefix=".assembling-", delete=False) as out:
+            temporary = Path(out.name)
+            for idx in range(total_chunks):
+                part_file = root / f"{idx}.part"
+                if not part_file.is_file():
+                    raise DownloadError(f"Thiếu file chunk {part_file}")
+                with part_file.open("rb") as source:
+                    while data := source.read(64 * 1024):
+                        hasher.update(data)
+                        out.write(data)
+        actual_hash = hasher.hexdigest()
+        if actual_hash != file_id:
+            raise DownloadError("SHA-256 toàn file không khớp")
+        os.replace(temporary, final_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
     LOG.info("SHA-256 toàn file khớp: %s", actual_hash)
 

@@ -133,3 +133,24 @@ class MultiProcessTests(unittest.TestCase):
         final_index = metadata["total_chunks"] - 1
         saved = download_dir / metadata["file_id"] / f"{final_index}.part"
         self.assertEqual(saved.read_bytes(), data[final_index * 1024:])
+        second_port = free_port()
+        while second_port in (tracker_port, seeder_port):
+            second_port = free_port()
+        second = start("e2e-seeder-b", ["-m", "peer.uploader", str(source),
+                       "--peer-id", "seeder-b", "--port", str(second_port), "--chunk-size", "1024"])
+        ready(second, query, lambda r: r["ok"] and len(r["peers"]) == 2)
+        full_output = Path(folder.name) / "two-sources"
+        full = subprocess.run([sys.executable, "-m", "peer.downloader", metadata["file_id"],
+                               "--tracker-port", str(tracker_port), "--workers", "2",
+                               "--output-dir", str(full_output)], cwd=ROOT, env=env,
+                              capture_output=True, timeout=30)
+        (log_dir / "e2e-week2-full-file.log").write_bytes(full.stdout + full.stderr)
+        self.assertEqual(full.returncode, 0, "Full-file CLI failed; inspect e2e-week2-full-file.log")
+        self.assertEqual((full_output / metadata["file_id"] / "completed" / source.name).read_bytes(), data)
+        log = full.stderr.decode("utf-8")
+        success_lines = [line for line in log.splitlines() if ' OK ' in line]
+        self.assertTrue(any('actual-uploader' in line for line in success_lines))
+        self.assertTrue(any('seeder-b' in line for line in success_lines))
+        (log_dir / "week2-result.json").write_text(json.dumps({"verified": True,
+            "sources": ["actual-uploader", "seeder-b"], "bytes": len(data),
+            "chunks": metadata["total_chunks"], "file_id": metadata["file_id"]}), encoding="utf-8")

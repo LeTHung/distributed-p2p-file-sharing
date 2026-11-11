@@ -320,13 +320,13 @@ class DownloaderTests(unittest.TestCase):
                 "peer_id": "seeder-alpha",
                 "host": seeder1_addr[0],
                 "port": seeder1_addr[1],
-                "chunk_indexes": [0, 2],
+                "chunk_indexes": [0, 1, 2],
             },
             {
                 "peer_id": "seeder-beta",
                 "host": seeder2_addr[0],
                 "port": seeder2_addr[1],
-                "chunk_indexes": [1],
+                "chunk_indexes": [0, 1, 2],
             },
         ]
 
@@ -387,6 +387,38 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("SHA-256 toàn file không khớp", str(ctx.exception))
         # Đảm bảo file rác không bị để lại
         self.assertFalse((parts_dir / "corrupted.bin").exists())
+
+    def test_reassembly_rejects_paths_without_touching_parts(self):
+        from peer.downloader import reassemble_file
+        root = Path(self.temp_dir.name) / "safe-parts"
+        root.mkdir()
+        (root / "0.part").write_bytes(b"abc")
+        for name in ("../outside.bin", "/absolute.bin", "C:\\outside.bin", "sub/file.bin", "NUL"):
+            with self.subTest(name=name), self.assertRaises(DownloadError):
+                reassemble_file(hashlib.sha256(b"abc").hexdigest(), name, 1, root)
+        self.assertEqual((root / "0.part").read_bytes(), b"abc")
+        self.assertFalse((root.parent / "outside.bin").exists())
+
+    def test_output_named_like_part_does_not_overwrite_input(self):
+        from peer.downloader import reassemble_file
+        root = Path(self.temp_dir.name) / "collision"
+        root.mkdir()
+        (root / "0.part").write_bytes(b"abc")
+        result = reassemble_file(hashlib.sha256(b"abc").hexdigest(), "0.part", 1, root)
+        self.assertEqual(result, root.resolve() / "completed" / "0.part")
+        self.assertEqual(result.read_bytes(), b"abc")
+
+    def test_failed_reassembly_preserves_previous_output_and_resume_parts(self):
+        from peer.downloader import reassemble_file
+        root = Path(self.temp_dir.name) / "retry"
+        (root / "completed").mkdir(parents=True)
+        (root / "completed" / "result.bin").write_bytes(b"previous-output")
+        (root / "0.part").write_bytes(b"abc")
+        with self.assertRaises(DownloadError):
+            reassemble_file("0" * 64, "result.bin", 1, root)
+        self.assertEqual((root / "completed" / "result.bin").read_bytes(), b"previous-output")
+        self.assertEqual((root / "0.part").read_bytes(), b"abc")
+        self.assertEqual(list((root / "completed").glob('.assembling-*')), [])
 
 
 if __name__ == "__main__":
