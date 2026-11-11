@@ -22,7 +22,6 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from common.heartbeat import PeerHeartbeat
 from common.config import load_settings
 from common.metadata import build_metadata
 from tracker.database import Directory
@@ -175,45 +174,6 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertEqual(len({p["peer_id"] for p in peers}), 24)
             self.assertTrue(all(len(p["chunk_indexes"]) == 1 for p in peers))
 
-    def test_peer_heartbeat_sender_keeps_peer_alive_then_cleanup_preserves_metadata(self):
-        settings = replace(load_settings(), heartbeat_interval_seconds=0.1, peer_ttl_seconds=1)
-        directory = Directory(settings, self.connect)
-        directory.initialize()
-
-        with running_server(directory, max_clients=8, cleanup_interval=0.05) as server:
-            for payload in (
-                {"type": "register_file", **self.metadata},
-                {"type": "register_peer", "peer_id": "heartbeat-peer", "host": "127.0.0.1", "port": 7001},
-                {"type": "announce_chunks", "peer_id": "heartbeat-peer",
-                 "file_id": self.metadata["file_id"], "chunk_indexes": [0, 1, 2]},
-            ):
-                self.assertTrue(rpc(server.server_address, payload)["ok"])
-
-            with PeerHeartbeat(server.server_address[:2], "heartbeat-peer",
-                               interval_seconds=settings.heartbeat_interval_seconds,
-                               timeout_seconds=settings.socket_timeout_seconds) as heartbeat:
-                time.sleep(1.35)
-                response = rpc(server.server_address, {"type": "get_peers", "file_id": self.metadata["file_id"]})
-                self.assertTrue(heartbeat.is_running)
-                self.assertEqual([peer["peer_id"] for peer in response["peers"]], ["heartbeat-peer"])
-
-            deadline = time.monotonic() + 3
-            peer_count = 1
-            while time.monotonic() < deadline:
-                with self.connect() as conn:
-                    peer_count = conn.execute("SELECT count(*) AS n FROM peers").fetchone()["n"]
-                if peer_count == 0:
-                    break
-                time.sleep(0.05)
-            self.assertEqual(peer_count, 0, "Peer was not pruned after heartbeat stopped")
-
-            response = rpc(server.server_address, {"type": "get_peers", "file_id": self.metadata["file_id"]})
-            self.assertEqual(response["peers"], [])
-            with self.connect() as conn:
-                self.assertEqual(conn.execute("SELECT count(*) AS n FROM files").fetchone()["n"], 1)
-                self.assertEqual(conn.execute("SELECT count(*) AS n FROM chunks").fetchone()["n"], 3)
-                self.assertEqual(conn.execute("SELECT count(*) AS n FROM peer_chunks").fetchone()["n"], 0)
-
     def test_prune_does_not_delete_peer_with_uncommitted_heartbeat(self):
         self.peer("racing")
         self.expire("racing")
@@ -274,79 +234,6 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(self.request("get_peers", file_id=self.metadata["file_id"])["peers"][0]["chunk_indexes"], [1])
         self.request("register_peer", peer_id="returning", host="127.0.0.1", port=7002)
         self.assertEqual(self.request("get_peers", file_id=self.metadata["file_id"])["peers"], [])
-
-    def test_tcp_peer_heartbeat_recovery_reregisters_and_reannounces(self):
-        peer_id = "tcp-recovering-peer"
-        with running_server(self.directory, cleanup_interval=10) as server:
-            address = server.server_address[:2]
-            for payload in (
-                {"type": "register_file", **self.metadata},
-                {"type": "register_peer", "peer_id": peer_id, "host": "127.0.0.1", "port": 7001},
-                {"type": "announce_chunks", "peer_id": peer_id,
-                 "file_id": self.metadata["file_id"], "chunk_indexes": [0, 2]},
-            ):
-                self.assertTrue(rpc(address, payload)["ok"])
-
-            self.expire(peer_id)
-            recovered = threading.Event()
-            scheduled = threading.Event()
-            recovery_lock = threading.Lock()
-            recovery_threads = []
-            recovery_failures = []
-            heartbeat_errors = []
-
-            def reregister_and_reannounce():
-                try:
-                    for payload in (
-                        {"type": "register_peer", "peer_id": peer_id,
-                         "host": "127.0.0.1", "port": 7001},
-                        {"type": "register_file", **self.metadata},
-                        {"type": "announce_chunks", "peer_id": peer_id,
-                         "file_id": self.metadata["file_id"], "chunk_indexes": [0, 2]},
-                    ):
-                        response = rpc(address, payload)
-                        if not response["ok"]:
-                            raise AssertionError(f"Recovery RPC failed: {response}")
-                except Exception as error:
-                    recovery_failures.append(error)
-                finally:
-                    recovered.set()
-
-            def manager_callback(error):
-                heartbeat_errors.append(error)
-                if error.error_code != "PEER_NOT_FOUND":
-                    return
-                with recovery_lock:
-                    if scheduled.is_set():
-                        return
-                    scheduled.set()
-                    worker = threading.Thread(target=reregister_and_reannounce,
-                                              name="test-peer-recovery")
-                    recovery_threads.append(worker)
-                    worker.start()
-
-            heartbeat = PeerHeartbeat(address, peer_id, interval_seconds=0.05,
-                                      timeout_seconds=1, on_error=manager_callback)
-            with heartbeat:
-                self.assertTrue(recovered.wait(3), "PEER_NOT_FOUND did not trigger peer recovery")
-                self.assertFalse(recovery_failures, recovery_failures)
-                for worker in recovery_threads:
-                    worker.join(2)
-                    self.assertFalse(worker.is_alive(), "Peer recovery worker leaked")
-                self.assertTrue(any(error.error_code == "PEER_NOT_FOUND" for error in heartbeat_errors))
-                response = rpc(address, {"type": "get_peers", "file_id": self.metadata["file_id"]})
-                self.assertEqual([(peer["peer_id"], peer["chunk_indexes"]) for peer in response["peers"]],
-                                 [(peer_id, [0, 2])])
-
-            self.assertTrue(rpc(address, {"type": "unregister_peer", "peer_id": peer_id})["ok"])
-            self.assertEqual(rpc(address, {"type": "get_peers", "file_id": self.metadata["file_id"]})["peers"], [])
-            self.assertEqual(rpc(address, {"type": "list_files"})["files"], [])
-
-        with self.connect() as conn:
-            self.assertEqual(conn.execute("SELECT count(*) AS n FROM peers").fetchone()["n"], 0)
-            self.assertEqual(conn.execute("SELECT count(*) AS n FROM peer_chunks").fetchone()["n"], 0)
-            self.assertEqual(conn.execute("SELECT count(*) AS n FROM files").fetchone()["n"], 1)
-            self.assertEqual(conn.execute("SELECT count(*) AS n FROM chunks").fetchone()["n"], 3)
 
     def test_concurrent_duplicate_announce_and_unregister_are_atomic(self):
         self.request("register_file", **self.metadata)

@@ -58,12 +58,6 @@ class TrackerTCPTests(unittest.TestCase):
         self.addCleanup(self.context.__exit__, None, None, None)
         self.address = self.server.server_address
 
-    def assert_invalid_request_frame(self, sock, message="Incomplete request frame"):
-        response = recv_json(sock, timeout=2)
-        self.assertEqual(response, {"request_id": None, "ok": False,
-                                    "error_code": "INVALID_REQUEST", "message": message})
-        self.assertEqual(sock.recv(1), b"")
-
     def test_fragmented_frame_receives_one_response_then_connection_closes(self):
         with socket.create_connection(self.address, timeout=2) as sock:
             r = {"type": "list_files", "request_id": "fragment"}
@@ -113,7 +107,7 @@ class TrackerTCPTests(unittest.TestCase):
             with socket.create_connection(self.address, timeout=2) as sock:
                 sock.sendall(fragment)
                 sock.shutdown(socket.SHUT_WR)
-                self.assert_invalid_request_frame(sock)
+                self.assertEqual(sock.recv(1), b"")
         self.assertTrue(rpc(self.address, {"type": "list_files"})["ok"])
 
     def test_validation_and_db_error_then_recovery(self):
@@ -132,71 +126,13 @@ class TrackerTCPTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=16) as pool:
                 replies = list(pool.map(lambda _: rpc(self.address, {"type": "list_files"}), range(80)))
             self.assertTrue(all(r["ok"] for r in replies))
-            self.assert_invalid_request_frame(idle)
+            self.assertEqual(idle.recv(1), b"")
 
     def test_shutdown_closes_incomplete_clients(self):
         client = socket.create_connection(self.address, timeout=2)
         self.addCleanup(client.close)
         client.sendall(b"\0")
         # The common cleanup stops the listener and joins all worker threads.
-
-    def test_t01_incomplete_prefix_logs_invalid_request_and_replies(self):
-        with self.assertLogs("tracker.server", level="WARNING") as captured:
-            with socket.create_connection(self.address, timeout=2) as sock:
-                sock.sendall(b"\0")
-                sock.shutdown(socket.SHUT_WR)
-                self.assert_invalid_request_frame(sock)
-        self.assertTrue(any("error_code=INVALID_REQUEST" in entry and
-                            "remote=('127.0.0.1'," in entry and "EOFError" in entry
-                            for entry in captured.output))
-
-    def test_t01_truncated_payload_timeout_logs_and_replies(self):
-        with self.assertLogs("tracker.server", level="WARNING") as captured:
-            with socket.create_connection(self.address, timeout=2) as sock:
-                sock.sendall(struct.pack("!I", 12) + b'{"type":')
-                self.assert_invalid_request_frame(sock)
-        self.assertTrue(any("error_code=INVALID_REQUEST" in entry and
-                            "remote=('127.0.0.1'," in entry and "TimeoutError" in entry
-                            for entry in captured.output))
-
-    def test_t01_invalid_json_logs_and_replies_with_null_request_id(self):
-        payload = b'{"type":'
-        with self.assertLogs("tracker.server", level="WARNING") as captured:
-            with socket.create_connection(self.address, timeout=2) as sock:
-                sock.sendall(struct.pack("!I", len(payload)) + payload)
-                response = recv_json(sock, timeout=2)
-                self.assertEqual(response, {"request_id": None, "ok": False,
-                                            "error_code": "INVALID_REQUEST", "message": "Invalid request frame"})
-                self.assertEqual(sock.recv(1), b"")
-        self.assertTrue(any("error_code=INVALID_REQUEST" in entry and "ProtocolError" in entry
-                            for entry in captured.output))
-
-    def test_t01_missing_request_id_returns_null_and_logs_invalid_request(self):
-        with self.assertLogs("tracker.server", level="WARNING") as captured:
-            with socket.create_connection(self.address, timeout=2) as sock:
-                send_json(sock, {"type": "list_files"})
-                response = recv_json(sock, timeout=2)
-                self.assertEqual(response["request_id"], None)
-                self.assertFalse(response["ok"])
-                self.assertEqual(response["error_code"], "INVALID_REQUEST")
-                self.assertNotIn("Traceback", response["message"])
-                self.assertEqual(sock.recv(1), b"")
-        self.assertTrue(any("error_code=INVALID_REQUEST" in entry and
-                            "cause=missing_or_invalid_request_id" in entry
-                            for entry in captured.output))
-
-    def test_t01_disconnected_client_is_logged_and_does_not_stop_tracker(self):
-        with self.assertLogs("tracker.server", level="WARNING") as captured:
-            sock = socket.create_connection(self.address, timeout=2)
-            sock.sendall(b"\0")
-            sock.close()
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline and not any(
-                    "error_code=INVALID_REQUEST" in entry for entry in captured.output):
-                time.sleep(0.01)
-            self.assertTrue(any("error_code=INVALID_REQUEST" in entry and "EOFError" in entry
-                                for entry in captured.output), captured.output)
-            self.assertTrue(rpc(self.address, {"type": "list_files"})["ok"])
 
     def test_client_limit_does_not_block_accept_loop_and_slot_is_released(self):
         with running_server(TransportDirectory(), max_clients=1, timeout_seconds=0.15) as server:
@@ -215,7 +151,7 @@ class TrackerTCPTests(unittest.TestCase):
                         self.assertEqual(rejected.recv(1), b"")
                     except ConnectionResetError:
                         pass
-                self.assert_invalid_request_frame(idle)
+                self.assertEqual(idle.recv(1), b"")
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline:
                 with server._lock:

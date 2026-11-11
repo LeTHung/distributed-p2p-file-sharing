@@ -1,10 +1,8 @@
 # Seeder tuần 1 — Lê Tiến Hưng
 
 Phạm vi: chia file, SHA-256 toàn file và từng chunk, đăng ký với Tracker,
-phục vụ `get_chunk` qua TCP. Bản tuần 1 xử lý tuần tự, một request mỗi kết nối.
-Đã bổ sung heartbeat và unregister để tích hợp ổn định với TTL của Tracker.
-Trên branch tuần 3 đã tích hợp worker pool và upload policy; xem
-[hướng dẫn tuần 3](UPLOADER_WEEK3.md) cho bản hiện tại.
+phục vụ `get_chunk` qua TCP. Server xử lý tuần tự, một request mỗi kết nối.
+Đã bổ sung heartbeat và unregister để tích hợp ổn định với TTL của Tracker. Worker pool và throttling ở các PR/mốc sau.
 
 ## Chạy
 

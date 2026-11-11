@@ -12,12 +12,10 @@ import socket
 import socketserver
 import signal
 import threading
-import time
 import uuid
 
 from common.framing import ProtocolError, recv_json, send_json
 from peer.uploader_lifecycle import SeederRegistration
-from peer.upload_policy import UploadPolicy
 
 LOG = logging.getLogger(__name__)
 
@@ -105,14 +103,8 @@ class ChunkHandler(socketserver.BaseRequestHandler):
             send_json(self.request, {"request_id": request_id, "ok": True,
                                     "file_id": shared.file_id, "chunk_index": request["chunk_index"],
                                     "data_length": len(data)})
-            # recv_json uses a receive deadline and may leave a short timeout.
-            self.request.settimeout(self.server.timeout_seconds)
-            started = time.monotonic()
-            LOG.info("Upload started chunk=%s bytes=%s request_id=%s", request["chunk_index"], len(data), request_id)
-            self.server.upload_policy.send(self.request, data)
-            LOG.info("Sent chunk=%s bytes=%s elapsed=%.3fs rate_limit=%sB/s request_id=%s",
-                     request["chunk_index"], len(data), time.monotonic() - started,
-                     self.server.upload_policy.rate, request_id)
+            self.request.sendall(data)
+            LOG.info("Sent chunk=%s bytes=%s request_id=%s", request["chunk_index"], len(data), request_id)
         except ProtocolError as error:
             LOG.warning("Invalid frame request_id=%s: %s", request_id, error)
             try:
@@ -120,10 +112,7 @@ class ChunkHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
         except (OSError, EOFError):
-            if self.server.stopping.is_set():
-                LOG.info("Upload cancelled during shutdown request_id=%s", request_id)
-            else:
-                LOG.warning("Peer connection failed request_id=%s", request_id, exc_info=True)
+            LOG.warning("Peer connection failed request_id=%s", request_id, exc_info=True)
 
     def error(self, request_id, code, message):
         send_json(self.request, {"request_id": request_id, "ok": False,
@@ -134,13 +123,13 @@ class UploaderServer(socketserver.TCPServer):
     """Dispatch connections to a fixed pool with a bounded waiting queue.
 
     Stop serve_forever (shutdown from another thread) before server_close.
-    Closing cancels queued/active transfers and waits for workers to exit.
+    Closing waits for accepted work; each connection has a socket timeout.
     """
 
     allow_reuse_address = True
 
     def __init__(self, address, shared_file: SharedFile, timeout_seconds: float = 5,
-                 *, max_workers: int = 4, max_pending: int = 16, upload_rate: int = 0):
+                 *, max_workers: int = 4, max_pending: int = 16):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if type(max_workers) is not int or max_workers <= 0:
@@ -149,10 +138,6 @@ class UploaderServer(socketserver.TCPServer):
             raise ValueError("max_pending must be a nonnegative integer")
         self.shared_file = shared_file
         self.timeout_seconds = timeout_seconds
-        self.stopping = threading.Event()
-        self.upload_policy = UploadPolicy(upload_rate, stopping=self.stopping)
-        self._connections = set()
-        self._connection_lock = threading.Lock()
         super().__init__(address, ChunkHandler)
         self._slots = threading.BoundedSemaphore(max_workers + max_pending)
         self._executor = ThreadPoolExecutor(max_workers=max_workers,
@@ -160,52 +145,29 @@ class UploaderServer(socketserver.TCPServer):
 
     def process_request(self, request, client_address):
         # Never let a slow client block the accept loop or grow an unbounded queue.
-        if self.stopping.is_set() or not self._slots.acquire(blocking=False):
+        if not self._slots.acquire(blocking=False):
             LOG.warning("Uploader capacity reached client=%s; closing connection", client_address)
             self.shutdown_request(request)
             return
-        with self._connection_lock:
-            if self.stopping.is_set():
-                self._slots.release()
-                self.shutdown_request(request)
-                return
-            self._connections.add(request)
         try:
             self._executor.submit(self._serve_request, request, client_address)
         except Exception:
-            with self._connection_lock:
-                self._connections.discard(request)
             self._slots.release()
             self.shutdown_request(request)
             raise
 
     def _serve_request(self, request, client_address):
         try:
-            if not self.stopping.is_set():
-                self.finish_request(request, client_address)
+            self.finish_request(request, client_address)
         except Exception:
             self.handle_error(request, client_address)
         finally:
             try:
                 self.shutdown_request(request)
             finally:
-                with self._connection_lock:
-                    self._connections.discard(request)
                 self._slots.release()
 
-    def request_stop(self):
-        """Interrupt pacing and socket I/O, including peers with partial frames."""
-        self.stopping.set()
-        with self._connection_lock:
-            connections = list(self._connections)
-        for connection in connections:
-            try:
-                connection.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-
     def server_close(self):
-        self.request_stop()
         super().server_close()
         # TCPServer.__init__ can call server_close before the executor exists.
         if hasattr(self, "_executor"):
@@ -225,8 +187,6 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=1024 * 1024)
     parser.add_argument("--workers", type=int, default=4, help="Maximum concurrent connections")
     parser.add_argument("--max-pending", type=int, default=16, help="Maximum waiting connections")
-    parser.add_argument("--upload-rate", type=int, default=0,
-                        help="Total binary payload bytes/second across all workers (0: unlimited)")
     parser.add_argument("--tracker-host", default=settings.tracker_host)
     parser.add_argument("--tracker-port", type=int, default=settings.tracker_port)
     parser.add_argument("--skip-tracker", action="store_true", help="Local peer testing only")
@@ -235,27 +195,24 @@ def main():
         parser.error("Wildcard bind requires --advertise-host")
     if not 1 <= args.port <= 65535 or not 1 <= args.tracker_port <= 65535:
         parser.error("Ports must be between 1 and 65535")
-    if args.workers <= 0 or args.max_pending < 0 or args.upload_rate < 0:
-        parser.error("--workers must be positive; --max-pending and --upload-rate must be nonnegative")
+    if args.workers <= 0 or args.max_pending < 0:
+        parser.error("--workers must be positive and --max-pending must be nonnegative")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         shared = SharedFile(args.file, args.chunk_size)
         with UploaderServer((args.host, args.port), shared, settings.socket_timeout_seconds,
-                            max_workers=args.workers, max_pending=args.max_pending,
-                            upload_rate=args.upload_rate) as server, ExitStack() as lifecycle:
+                            max_workers=args.workers, max_pending=args.max_pending) as server, ExitStack() as lifecycle:
             if not args.skip_tracker:
                 tracker = (args.tracker_host, args.tracker_port)
                 lifecycle.enter_context(SeederRegistration(
                     lambda payload: tracker_request(tracker, payload, settings.socket_timeout_seconds),
                     shared, args.peer_id, args.advertise_host or args.host, args.port,
                     settings.heartbeat_interval_seconds))
-            LOG.info("Seeder peer_id=%s listening=%s:%s file_id=%s chunks=%s workers=%s pending=%s rate=%sB/s",
-                     args.peer_id, args.host, args.port, shared.file_id, len(shared.chunks),
-                     args.workers, args.max_pending, args.upload_rate)
+            LOG.info("Seeder peer_id=%s listening=%s:%s file_id=%s chunks=%s",
+                     args.peer_id, args.host, args.port, shared.file_id, len(shared.chunks))
             # Stop the accept loop before leaving the context and unregistering.
             # shutdown must be called from another thread than serve_forever.
             def stop(signum, frame):
-                server.request_stop()
                 threading.Thread(target=server.shutdown, name="seeder-stop").start()
 
             signal.signal(signal.SIGINT, stop)

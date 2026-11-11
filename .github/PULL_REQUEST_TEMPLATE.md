@@ -18,4 +18,4 @@ Kết quả:
 - [ ] Không commit `.env`, password, token hoặc file demo lớn.
 - [ ] Không thay đổi protocol ngoài `docs/PROTOCOL.md`.
 - [ ] Đã cập nhật README/tài liệu nếu cách chạy thay đổi.
-- [ ] Nhóm trưởng Lê Tiến Hưng đã review và quyết định merge.
+- [ ] Có một thành viên khác review trước khi merge.

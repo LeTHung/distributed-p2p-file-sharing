@@ -102,27 +102,3 @@ Seeder tuần 2 có `--workers` (mặc định 4), `--max-pending` (mặc địn
 Chạy hai Seeder cùng file và chunk_size, khác peer_id/port; Leecher xoay nguồn
 theo index để sử dụng cả hai kể cả khi cả hai giữ đầy đủ file. Xem
 [hướng dẫn tích hợp tuần 2](WEEK2_DEMO.md).
-
-## Tuần 3
-
-Seeder giới hạn tổng payload bytes/giây qua `--upload-rate` (0: unlimited),
-giữ giới hạn worker/queue. Ví dụ chunk 64 KiB ở tổng rate 128 KiB/s:
-
-```powershell
-python -m peer.uploader FILE --peer-id seeder-a --port 7001 --chunk-size 65536 --workers 4 --upload-rate 131072
-```
-
-Leecher thử nguồn dự phòng khi socket/hash lỗi, hỏi lại Tracker tối đa hai
-vòng sau danh sách ban đầu, không tự chọn mình làm nguồn. Không có nguồn
-thì báo chờ và giữ .part hợp lệ để chạy lại/resume. Để vừa tải vừa phục vụ
-chunk hợp lệ và tiếp tục chia sẻ file sau khi tải xong:
-
-```powershell
-python -m peer.downloader FILE_ID --peer-id leecher-a --serve-port 7003 --workers 2
-```
-
-Lệnh này giữ tiến trình chạy đến Ctrl+C. Địa chỉ thực được register trước
-khi announce; heartbeat duy trì nguồn. Chỉ chunk đã kiểm tra mới được công
-bố; serve từ .part hoặc completed/ sau ghép. Chỉ dùng --peer-id riêng cho
-từng tiến trình. Không có --peer-id thì chỉ tải và thoát. Alias --peer_id
-vẫn được hỗ trợ. Xem [kịch bản demo tuần 3](WEEK3_DEMO.md).

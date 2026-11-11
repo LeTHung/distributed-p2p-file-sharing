@@ -1,9 +1,5 @@
 # Seeder tuần 2 — Lê Tiến Hưng
 
-Phần pool này đã được tích hợp cùng heartbeat và upload policy trong bản
-tuần 3. Xem [UPLOADER_WEEK3.md](UPLOADER_WEEK3.md) cho hành vi hiện tại;
-các mô tả dưới đây ghi lại phạm vi bản tuần 2 ban đầu.
-
 Issue #5: phục vụ ít nhất hai request chunk đồng thời mà một kết nối chậm
 không chặn toàn bộ server. Không thay đổi JSON, framing hay thuật toán hash.
 

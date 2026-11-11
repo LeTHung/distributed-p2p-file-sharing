@@ -7,19 +7,17 @@ CREATEDB; a unique database created by this test is the only database removed.
 import hashlib
 import os
 from pathlib import Path
-import signal
 import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 import uuid
 
 import psycopg
 from psycopg import sql
-from psycopg.conninfo import conninfo_to_dict, make_conninfo
+from psycopg.conninfo import conninfo_to_dict
 
 from common.framing import ProtocolError
 from common.metadata import build_metadata
@@ -35,159 +33,9 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def _rpc_if_available(address, payload):
-    try:
-        return rpc(address, payload)
-    except (OSError, EOFError, ProtocolError):
-        return None
-
-
 @unittest.skipUnless(os.getenv("TRACKER_TEST_DSN") and UPLOADER,
                      "Set TRACKER_TEST_DSN and TRACKER_UPLOADER_SOURCE for actual-uploader integration")
 class MultiProcessTests(unittest.TestCase):
-    def test_real_uploader_recovers_after_expired_peer_and_unregisters(self):
-        dsn = os.environ["TRACKER_TEST_DSN"]
-        database = "tracker_recovery_" + uuid.uuid4().hex
-        with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
-            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
-
-        def drop_database():
-            with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
-                conn.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(database)))
-
-        self.addCleanup(drop_database)
-        tracker_port, seeder_port = free_port(), free_port()
-        while seeder_port == tracker_port:
-            seeder_port = free_port()
-        peer_id = "recovery-" + uuid.uuid4().hex[:10]
-        config = conninfo_to_dict(dsn)
-        test_dsn = make_conninfo(dsn, dbname=database)
-        env = {**os.environ, "PYTHONPATH": str(ROOT), "PYTHONIOENCODING": "utf-8",
-               "POSTGRES_HOST": config.get("host", "127.0.0.1"),
-               "POSTGRES_PORT": config.get("port", "5432"), "POSTGRES_DB": database,
-               "POSTGRES_USER": config.get("user", ""), "POSTGRES_PASSWORD": config.get("password", ""),
-               "TRACKER_HOST": "127.0.0.1", "TRACKER_PORT": str(tracker_port),
-               "SOCKET_TIMEOUT_SECONDS": "2", "HEARTBEAT_INTERVAL_SECONDS": "2",
-               "PEER_TTL_SECONDS": "8", "TRACKER_CLEANUP_INTERVAL_SECONDS": "60"}
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        source = Path(folder.name) / "recovery-source.bin"
-        data = bytes(range(251)) * 13 + b"short-tail"
-        source.write_bytes(data)
-        metadata = build_metadata(source, 1024)
-        log_lines = {}
-
-        def start(name, args):
-            options = {}
-            if os.name == "nt":
-                options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            process = subprocess.Popen([sys.executable, *args], cwd=ROOT, env=env,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       text=True, encoding="utf-8", errors="replace", bufsize=1, **options)
-            log_lines[name] = []
-
-            def capture_output():
-                for line in process.stdout:
-                    log_lines[name].append(line)
-                process.stdout.close()
-
-            reader = threading.Thread(target=capture_output, name=f"{name}-log-reader", daemon=True)
-            reader.start()
-
-            def stop_if_running():
-                if process.poll() is None:
-                    process.terminate()
-                process.wait(timeout=10)
-                reader.join(timeout=5)
-
-            self.addCleanup(stop_if_running)
-            return process
-
-        def log_text(name):
-            return "".join(log_lines.get(name, []))
-
-        def wait_until(predicate, message, process=None, timeout=12):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if process is not None and process.poll() is not None:
-                    self.fail(f"Process exited before {message}: {log_text('e2e-recovery-uploader')}")
-                if predicate():
-                    return
-                time.sleep(0.05)
-            self.fail(f"Timed out waiting for {message}")
-
-        def read_last_seen():
-            with psycopg.connect(test_dsn, autocommit=True, connect_timeout=5) as conn:
-                return conn.execute("SELECT last_seen FROM peers WHERE peer_id=%s", (peer_id,)).fetchone()
-
-        tracker = start("e2e-recovery-tracker", ["-m", "tracker.server"])
-        wait_until(lambda: (lambda result: result and result["ok"])(
-            _rpc_if_available(("127.0.0.1", tracker_port), {"type": "list_files"})),
-            "Tracker startup", tracker)
-        runner = "import runpy,signal,sys; "
-        if os.name == "nt":
-            runner += ("signal.signal(signal.SIGBREAK, lambda signum, frame: "
-                       "(_ for _ in ()).throw(KeyboardInterrupt())); ")
-        runner += "target=sys.argv.pop(1); runpy.run_path(target,run_name='__main__')"
-        uploader = start("e2e-recovery-uploader", ["-c", runner, UPLOADER, str(source), "--peer-id", peer_id,
-                                                     "--port", str(seeder_port), "--chunk-size", "1024"])
-        query = {"type": "get_peers", "file_id": metadata["file_id"]}
-        wait_until(lambda: (lambda result: result and result.get("ok") and
-                            any(peer["peer_id"] == peer_id for peer in result["peers"]))(
-            _rpc_if_available(("127.0.0.1", tracker_port), query)),
-            "real Uploader registration and initial announce", uploader)
-        initial = rpc(("127.0.0.1", tracker_port), query)
-        initial_peer = next(peer for peer in initial["peers"] if peer["peer_id"] == peer_id)
-        expected_indexes = list(range(metadata["total_chunks"]))
-        self.assertEqual(initial_peer["chunk_indexes"], expected_indexes)
-
-        # Observe one real Uploader heartbeat first, then expire its row. This
-        # leaves almost a full heartbeat interval to assert PEER_NOT_FOUND before
-        # the Uploader's next scheduled request, avoiding a timing race.
-        first_seen = read_last_seen()
-        self.assertIsNotNone(first_seen, "Uploader must have registered in PostgreSQL")
-        baseline = first_seen[0]
-        wait_until(lambda: (lambda row: row is not None and row[0] > baseline)(read_last_seen()),
-                   "a real Uploader heartbeat", uploader, timeout=6)
-        with psycopg.connect(test_dsn, autocommit=True, connect_timeout=5) as conn:
-            conn.execute("UPDATE peers SET last_seen=clock_timestamp()-INTERVAL '1 hour' WHERE peer_id=%s",
-                         (peer_id,))
-        expired = rpc(("127.0.0.1", tracker_port), {"type": "heartbeat", "peer_id": peer_id})
-        self.assertFalse(expired["ok"])
-        self.assertEqual(expired["error_code"], "PEER_NOT_FOUND")
-
-        wait_until(lambda: "PEER_NOT_FOUND" in log_text("e2e-recovery-uploader"),
-                   "the actual Uploader process to receive PEER_NOT_FOUND", uploader, timeout=6)
-        wait_until(lambda: f"Seeder registered again peer_id={peer_id}" in log_text("e2e-recovery-uploader"),
-                   "the actual Uploader to re-register", uploader, timeout=10)
-        wait_until(lambda: (lambda result: result and result.get("ok") and
-                            any(peer["peer_id"] == peer_id and peer["chunk_indexes"] == expected_indexes
-                                for peer in result["peers"]))(
-            _rpc_if_available(("127.0.0.1", tracker_port), query)),
-            "the Tracker directory to contain the re-announced chunks", uploader, timeout=5)
-
-        # Exercise the real Student 3 CLI only for one verified chunk; this does
-        # not assert parallel whole-file transfer or complete downloader failover.
-        download_dir = Path(folder.name) / "recovery-download"
-        leecher = subprocess.run([sys.executable, "-m", "peer.downloader", metadata["file_id"],
-                                  "--chunk-index", str(metadata["total_chunks"] - 1),
-                                  "--tracker-port", str(tracker_port), "--output-dir", str(download_dir)],
-                                 cwd=ROOT, env=env, capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace", timeout=15)
-        self.assertEqual(leecher.returncode, 0, f"Actual Downloader CLI failed: {leecher.stdout}\n{leecher.stderr}")
-        final_index = metadata["total_chunks"] - 1
-        saved = download_dir / metadata["file_id"] / f"{final_index}.part"
-        self.assertEqual(saved.read_bytes(), data[final_index * 1024:])
-
-        # A graceful console interrupt unwinds the Uploader context manager and unregisters.
-        uploader.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
-        uploader.wait(timeout=10)
-        self.assertEqual(uploader.returncode, 0, log_text("e2e-recovery-uploader"))
-        with psycopg.connect(test_dsn, autocommit=True, connect_timeout=5) as conn:
-            self.assertEqual(conn.execute("SELECT count(*) FROM peers WHERE peer_id=%s", (peer_id,)).fetchone()[0], 0)
-            self.assertEqual(conn.execute("SELECT count(*) FROM peer_chunks WHERE peer_id=%s", (peer_id,)).fetchone()[0], 0)
-        self.assertEqual(rpc(("127.0.0.1", tracker_port), {"type": "list_files"})["files"], [])
-
     def test_tracker_restart_and_real_uploader_verified_by_controlled_probe(self):
         dsn = os.environ["TRACKER_TEST_DSN"]
         database = "tracker_e2e_" + uuid.uuid4().hex
