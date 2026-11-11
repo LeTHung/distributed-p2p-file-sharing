@@ -23,12 +23,13 @@ def main():
     parser.add_argument("--tracker-port", required=True, type=int)
     parser.add_argument("--file-id", required=True)
     args = parser.parse_args()
-    metadata = request(("127.0.0.1", args.tracker_port), {"type": "get_peers", "file_id": args.file_id})
+    directory = request(("127.0.0.1", args.tracker_port), {"type": "get_peers", "file_id": args.file_id})
+    metadata = directory["file"]
     digest = hashlib.sha256()
     size = 0
     for chunk in metadata["chunks"]:
         index = chunk["chunk_index"]
-        peer = next(p for p in metadata["peers"] if index in p["chunk_indexes"])
+        peer = next(p for p in directory["peers"] if index in p["chunk_indexes"])
         request_id = str(uuid.uuid4())
         with socket.create_connection((peer["host"], peer["port"]), timeout=5) as sock:
             send_json(sock, {"type": "get_chunk", "request_id": request_id,

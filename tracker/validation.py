@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+from pathlib import PureWindowsPath
 from typing import Any
 
 from common.metadata import HASH, validate_metadata
@@ -50,6 +51,13 @@ def validate_request(request: dict[str, Any]) -> dict[str, Any]:
             validate_metadata(request)
         except ValueError as error:
             fail(str(error))
+        if request["file_size"] == 0:
+            fail("Empty files are not supported by the current wire contract")
+        name = request["file_name"]
+        if name in (".", "..") or "/" in name or "\\" in name or PureWindowsPath(name).drive:
+            fail("file_name must be a display name without a directory or drive")
+        if [chunk["chunk_index"] for chunk in request["chunks"]] != list(range(request["total_chunks"])):
+            fail("chunks must be ordered by chunk_index")
     if kind == "announce_chunks" or (kind == "get_peers" and "chunk_indexes" in request):
         indexes = request.get("chunk_indexes")
         if not isinstance(indexes, list) or any(type(i) is not int or not 0 <= i < 2**31 for i in indexes):

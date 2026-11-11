@@ -84,3 +84,21 @@ cưỡng bức, Tracker loại peer theo TTL. Khi heartbeat lỗi, Seeder thử 
 và announce lại toàn bộ nguồn. Không xem test tải một chunk là nghiệm thu đa nguồn.
 
 Xem [kịch bản nghiệm thu tuần 1](WEEK1_DEMO.md) để chạy ba terminal và lưu log.
+
+## Leecher tuần 2
+
+Tải song song toàn bộ file từ nhiều Seeder, tự động ghép file và kiểm tra SHA-256:
+
+```powershell
+python -m peer.downloader <file_id> --workers 4 --output-dir downloads
+```
+
+Kết quả file hoàn chỉnh được lưu tại `downloads/<file_id>/completed/<file_name>`
+sau khi mã băm khớp với `file_id`. File `.part` được giữ khi thất bại để resume,
+chỉ dọn sau khi ghép thành công. Tên file chỉ là basename, không được chỉ định
+đường dẫn. Đầu ra được ghi tạm và thay thế nguyên tử sau kiểm tra hash.
+
+Seeder tuần 2 có `--workers` (mặc định 4), `--max-pending` (mặc định 16).
+Chạy hai Seeder cùng file và chunk_size, khác peer_id/port; Leecher xoay nguồn
+theo index để sử dụng cả hai kể cả khi cả hai giữ đầy đủ file. Xem
+[hướng dẫn tích hợp tuần 2](WEEK2_DEMO.md).
