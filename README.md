@@ -56,73 +56,9 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 ## Cách làm việc
 
 1. Lấy issue được giao theo tuần trên GitHub.
-2. Tạo branch `feature/<mo-ta>` từ `develop` đã cập nhật.
+2. Tạo branch `feature/<mo-ta>` từ `main`.
 3. Mỗi pull request chỉ làm một việc, ghi rõ cách kiểm tra.
-4. Nhóm trưởng Lê Tiến Hưng review và quyết định merge, không yêu cầu thêm người review.
-5. PR feature vào `develop`; sau nghiệm thu tích hợp mới đưa `develop` vào `main`. Không push trực tiếp hai nhánh này.
+4. Có một thành viên khác review trước khi merge.
+5. Không push trực tiếp lên `main`.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
-
-## Leecher tuần 1
-
-Sau khi Tracker và Seeder đã chạy, lấy `file_id` từ log Seeder rồi tải một chunk:
-
-```powershell
-python -m peer.downloader <file_id> --chunk-index 0 --output-dir downloads
-```
-
-Kết quả nằm ở `downloads/<file_id>/0.part`, chỉ lưu sau khi đúng độ dài và SHA-256.
-Leecher nhận được cả metadata top-level của Tracker hiện tại lẫn trường `file`
-theo hợp đồng Drive. Nếu nguồn lỗi hoặc hash sai, thử peer tiếp theo trong danh
-sách đã nhận; chưa có tải song song/ghép toàn file hoặc hỏi lại Tracker khi hết nguồn.
-
-Thử riêng với Seeder bằng `--peer-host 127.0.0.1 --peer-port 7001`
-và bắt buộc `--expected-hash <chunk_hash>`; thiếu hash sẽ bị từ chối.
-Seeder gửi heartbeat theo cấu hình (mặc định 5 giây), nên vẫn được tìm thấy
-sau TTL 20 giây khi đang chạy. Ctrl+C dừng phục vụ và unregister; nếu bị tắt
-cưỡng bức, Tracker loại peer theo TTL. Khi heartbeat lỗi, Seeder thử đăng ký
-và announce lại toàn bộ nguồn. Không xem test tải một chunk là nghiệm thu đa nguồn.
-
-Xem [kịch bản nghiệm thu tuần 1](WEEK1_DEMO.md) để chạy ba terminal và lưu log.
-
-## Leecher tuần 2
-
-Tải song song toàn bộ file từ nhiều Seeder, tự động ghép file và kiểm tra SHA-256:
-
-```powershell
-python -m peer.downloader <file_id> --workers 4 --output-dir downloads
-```
-
-Kết quả file hoàn chỉnh được lưu tại `downloads/<file_id>/completed/<file_name>`
-sau khi mã băm khớp với `file_id`. File `.part` được giữ khi thất bại để resume,
-chỉ dọn sau khi ghép thành công. Tên file chỉ là basename, không được chỉ định
-đường dẫn. Đầu ra được ghi tạm và thay thế nguyên tử sau kiểm tra hash.
-
-Seeder tuần 2 có `--workers` (mặc định 4), `--max-pending` (mặc định 16).
-Chạy hai Seeder cùng file và chunk_size, khác peer_id/port; Leecher xoay nguồn
-theo index để sử dụng cả hai kể cả khi cả hai giữ đầy đủ file. Xem
-[hướng dẫn tích hợp tuần 2](WEEK2_DEMO.md).
-
-## Tuần 3
-
-Seeder giới hạn tổng payload bytes/giây qua `--upload-rate` (0: unlimited),
-giữ giới hạn worker/queue. Ví dụ chunk 64 KiB ở tổng rate 128 KiB/s:
-
-```powershell
-python -m peer.uploader FILE --peer-id seeder-a --port 7001 --chunk-size 65536 --workers 4 --upload-rate 131072
-```
-
-Leecher thử nguồn dự phòng khi socket/hash lỗi, hỏi lại Tracker tối đa hai
-vòng sau danh sách ban đầu, không tự chọn mình làm nguồn. Không có nguồn
-thì báo chờ và giữ .part hợp lệ để chạy lại/resume. Để vừa tải vừa phục vụ
-chunk hợp lệ và tiếp tục chia sẻ file sau khi tải xong:
-
-```powershell
-python -m peer.downloader FILE_ID --peer-id leecher-a --serve-port 7003 --workers 2
-```
-
-Lệnh này giữ tiến trình chạy đến Ctrl+C. Địa chỉ thực được register trước
-khi announce; heartbeat duy trì nguồn. Chỉ chunk đã kiểm tra mới được công
-bố; serve từ .part hoặc completed/ sau ghép. Chỉ dùng --peer-id riêng cho
-từng tiến trình. Không có --peer-id thì chỉ tải và thoát. Alias --peer_id
-vẫn được hỗ trợ. Xem [kịch bản demo tuần 3](WEEK3_DEMO.md).
