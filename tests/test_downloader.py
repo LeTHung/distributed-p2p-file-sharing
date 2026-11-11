@@ -68,10 +68,10 @@ class DownloaderTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.sample_path = Path(self.temp_dir.name) / "sample.bin"
-        
+
         self.sample_data = b"0123456789abcdefghij!@#$%"
         self.sample_path.write_bytes(self.sample_data)
-        
+
         self.shared_file = SharedFile(self.sample_path, chunk_size=10)
         self.seeder_server = UploaderServer(("127.0.0.1", 0), self.shared_file, timeout_seconds=2)
         self.seeder_thread = threading.Thread(target=self.seeder_server.serve_forever, daemon=True)
@@ -189,7 +189,7 @@ class DownloaderTests(unittest.TestCase):
     def test_full_flow_with_mock_tracker(self):
         """Kiểm tra toàn bộ luồng tích hợp: Leecher -> Tracker -> Seeder -> Leecher."""
         seeder_addr = get_server_addr(self.seeder_server)
-        
+
         peer_list = [{
             "peer_id": "seeder-hung",
             "host": seeder_addr[0],

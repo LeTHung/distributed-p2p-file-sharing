@@ -27,33 +27,33 @@ def error_response(request_id, code, message):
 class TrackerHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(self.server.timeout_seconds)
-        # Peers currently open one connection per RPC; also support framed RPCs in sequence.
-        while not self.server.stopping.is_set():
-            try:
-                request = recv_json(self.request, timeout=self.server.timeout_seconds)
-            except ProtocolError:
-                LOG.warning("Invalid JSON frame from %s", self.client_address[0])
-                self.reply(error_response(None, "INVALID_REQUEST", "Invalid JSON frame"))
-                return  # Stream position cannot be trusted after a malformed frame.
-            except (EOFError, OSError):
-                return
-            request_id = request.get("request_id")
-            if not isinstance(request_id, str) or len(request_id) > 256:
-                request_id = None
-            try:
-                result = self.server.directory.execute(validate_request(request))
-                response = {**result, "request_id": request_id, "ok": True}
-            except RequestError as error:
-                response = error_response(request_id, error.code, str(error))
-            except psycopg.Error as error:
-                # Never log a DSN, password, raw SQL, or user-supplied error text.
-                LOG.error("Database request failed (%s)", type(error).__name__)
-                response = error_response(request_id, "INTERNAL_ERROR", "Database operation failed; retry later")
-            except Exception as error:
-                LOG.error("Unexpected request failure (%s)", type(error).__name__)
-                response = error_response(request_id, "INTERNAL_ERROR", "Tracker operation failed")
-            if not self.reply(response):
-                return
+        # One framed request and one response per connection, then close.
+        if self.server.stopping.is_set():
+            return
+        try:
+            request = recv_json(self.request, timeout=self.server.timeout_seconds)
+        except ProtocolError:
+            LOG.warning("Invalid JSON frame from %s request_id=None", self.client_address[0])
+            self.reply(error_response(None, "INVALID_REQUEST", "Invalid JSON frame"))
+            return
+        except (EOFError, OSError):
+            return
+        request_id = request.get("request_id")
+        if not isinstance(request_id, str) or len(request_id) > 256:
+            request_id = None
+        try:
+            result = self.server.directory.execute(validate_request(request))
+            response = {**result, "request_id": request_id, "ok": True}
+        except RequestError as error:
+            response = error_response(request_id, error.code, str(error))
+        except psycopg.Error as error:
+            # Never log a DSN, password, raw SQL, or user-supplied error text.
+            LOG.error("Database request failed (%s) request_id=%r", type(error).__name__, request_id)
+            response = error_response(request_id, "INTERNAL_ERROR", "Database operation failed; retry later")
+        except Exception as error:
+            LOG.error("Unexpected request failure (%s) request_id=%r", type(error).__name__, request_id)
+            response = error_response(request_id, "INTERNAL_ERROR", "Tracker operation failed")
+        self.reply(response)
 
     def reply(self, response):
         self.request.settimeout(self.server.timeout_seconds)

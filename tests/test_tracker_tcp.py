@@ -58,7 +58,7 @@ class TrackerTCPTests(unittest.TestCase):
         self.addCleanup(self.context.__exit__, None, None, None)
         self.address = self.server.server_address
 
-    def test_fragmented_and_multiple_frames_on_same_connection(self):
+    def test_fragmented_frame_receives_one_response_then_connection_closes(self):
         with socket.create_connection(self.address, timeout=2) as sock:
             r = {"type": "list_files", "request_id": "fragment"}
             data = json.dumps(r).encode()
@@ -66,8 +66,32 @@ class TrackerTCPTests(unittest.TestCase):
             for byte in frame:
                 sock.sendall(bytes([byte]))
             self.assertEqual(recv_json(sock), {"ok": True, "request_id": "fragment", "files": []})
-            send_json(sock, {**r, "request_id": "second"})
-            self.assertEqual(recv_json(sock)["request_id"], "second")
+            self.assertEqual(sock.recv(1), b"")
+
+    def test_pipelined_requests_do_not_create_second_rpc_on_same_connection(self):
+        with socket.create_connection(self.address, timeout=2) as sock:
+            frames = []
+            for request_id in ("first", "second"):
+                data = json.dumps({"type": "list_files", "request_id": request_id}).encode()
+                frames.append(struct.pack("!I", len(data)) + data)
+            sock.sendall(b"".join(frames))
+            self.assertEqual(recv_json(sock)["request_id"], "first")
+            try:
+                self.assertEqual(sock.recv(1), b"")
+            except ConnectionResetError:
+                pass  # Closing with unread pipelined input can reset the TCP stream.
+
+    def test_invalid_announce_preserves_request_id_and_closes_connection(self):
+        for indexes in ([True], [-1], "0", None):
+            with self.subTest(indexes=indexes), socket.create_connection(self.address, timeout=2) as sock:
+                send_json(sock, {"type": "announce_chunks", "request_id": "invalid-announce",
+                                 "peer_id": "a", "file_id": "a" * 64, "chunk_indexes": indexes})
+                response = recv_json(sock)
+                self.assertEqual(response["request_id"], "invalid-announce")
+                self.assertFalse(response["ok"])
+                self.assertEqual(response["error_code"], "INVALID_REQUEST")
+                self.assertIsInstance(response["message"], str)
+                self.assertEqual(sock.recv(1), b"")
 
     def test_invalid_frames_and_disconnects_do_not_stop_server(self):
         for payload in (b"{", b"[]", b"\xff", b'{"x":NaN}', b"[" * 2000):
@@ -113,15 +137,27 @@ class TrackerTCPTests(unittest.TestCase):
     def test_client_limit_does_not_block_accept_loop_and_slot_is_released(self):
         with running_server(TransportDirectory(), max_clients=1, timeout_seconds=0.15) as server:
             with socket.create_connection(server.server_address, timeout=2) as idle:
-                # A completed response proves this connection owns the sole worker.
-                send_json(idle, {"type": "list_files", "request_id": "idle"})
-                self.assertTrue(recv_json(idle)["ok"])
+                idle.sendall(b"\0")  # Hold the single worker inside an incomplete header.
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    with server._lock:
+                        if idle.getsockname() in [s.getpeername() for s in server._connections]:
+                            break
+                    threading.Event().wait(0.001)
+                else:
+                    self.fail("Incomplete client did not acquire the worker slot")
                 with socket.create_connection(server.server_address, timeout=2) as rejected:
                     try:
                         self.assertEqual(rejected.recv(1), b"")
                     except ConnectionResetError:
                         pass
                 self.assertEqual(idle.recv(1), b"")
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                with server._lock:
+                    if not server._connections:
+                        break
+                threading.Event().wait(0.001)
             self.assertTrue(rpc(server.server_address, {"type": "list_files"})["ok"])
 
 
