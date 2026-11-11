@@ -57,4 +57,5 @@ Tracker, Seeder và kết quả probe hash được giữ trong thư mục đã 
 
 Tuần 1 chỉ nghiệm thu một chunk qua ba module. Tải song song từ hai nguồn,
 ghép file và failover giữa lúc tải vẫn là các mốc sau. Worker pool tuần 2 ở
-PR riêng; không dùng kết quả tuần 1 để xác nhận các mốc đó đã hoàn thành.
+PR riêng và đã được đưa vào branch Seeder tuần 3 cùng upload policy; không
+dùng kết quả tải một chunk tuần 1 để xác nhận mốc tải đa nguồn đã hoàn thành.
