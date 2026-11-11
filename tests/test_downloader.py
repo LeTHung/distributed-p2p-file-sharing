@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 from common.framing import recv_json, send_json
 from peer.downloader import (
     DownloadError,
+    announce_chunk_to_tracker,
     download_full_file,
     download_single_chunk,
     fetch_chunk_from_peer,
@@ -420,6 +421,90 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual((root / "0.part").read_bytes(), b"abc")
         self.assertEqual(list((root / "completed").glob('.assembling-*')), [])
 
+
+    def test_seeder_shutdown_mid_download_failover(self):
+        """Tiêu chí tuần 3: Tắt Seeder khi đang tải; Leecher tự động failover sang nguồn khác."""
+        # Seeder 1: Bị tắt/sập kết nối ngay lập tức (mô phỏng Seeder bị crash/shutdown)
+        crashed_seeder = UploaderServer(("127.0.0.1", 0), self.shared_file, timeout_seconds=2)
+        crashed_addr = get_server_addr(crashed_seeder)
+        crashed_seeder.server_close()  # Đóng socket ngay lập tức
+
+        # Seeder 2: Nguồn dự phòng hoạt động bình thường (dùng self.seeder_server)
+        backup_addr = get_server_addr(self.seeder_server)
+
+        # Tracker thông báo: Seeder bị lỗi đứng trước, Seeder dự phòng đứng sau
+        peer_list = [
+            {
+                "peer_id": "seeder-crashed",
+                "host": crashed_addr[0],
+                "port": crashed_addr[1],
+                "chunk_indexes": [0, 1, 2],
+            },
+            {
+                "peer_id": "seeder-backup",
+                "host": backup_addr[0],
+                "port": backup_addr[1],
+                "chunk_indexes": [0, 1, 2],
+            },
+        ]
+
+        tracker_server = MockTrackerServer(("127.0.0.1", 0), self.shared_file.metadata(), peer_list)
+        tracker_thread = threading.Thread(target=tracker_server.serve_forever, daemon=True)
+        tracker_thread.start()
+
+        def stop_tracker():
+            tracker_server.shutdown()
+            tracker_server.server_close()
+            tracker_thread.join(timeout=2)
+        self.addCleanup(stop_tracker)
+
+        out_dir = Path(self.temp_dir.name) / "failover_download"
+
+        # Bắt log để kiểm tra bằng chứng nghiệm thu tuần 3:
+        # "Log thể hiện Leecher timeout/bắt lỗi rồi chuyển nguồn"
+        with self.assertLogs("peer.downloader", level="INFO") as log_capture:
+            saved_file = download_full_file(
+                self.shared_file.file_id,
+                output_dir=out_dir,
+                tracker_address=get_server_addr(tracker_server),
+                peer_id="leecher-hung",
+                max_workers=2,
+            )
+
+        # 1. Quá trình tải vẫn hoàn thành 100% nhờ tự động chuyển sang Seeder dự phòng
+        self.assertTrue(saved_file.exists())
+        self.assertEqual(saved_file.read_bytes(), self.sample_data)
+        self.assertEqual(
+            hashlib.sha256(saved_file.read_bytes()).hexdigest(),
+            self.shared_file.file_id,
+        )
+
+        # 2. Log phải chứa thông điệp [FAILOVER], ghi nhận lỗi từ seeder-crashed và chuyển sang seeder-backup
+        logs_text = "\n".join(log_capture.output)
+        self.assertIn("[FAILOVER]", logs_text)
+        self.assertIn("seeder-crashed", logs_text)
+        self.assertIn("seeder-backup", logs_text)
+
+    def test_announce_chunk_to_tracker(self):
+        """Tiêu chí tuần 3: Kiểm tra gửi RPC announce_chunks lên Tracker sau khi tải chunk."""
+        tracker_server = MockTrackerServer(("127.0.0.1", 0), self.shared_file.metadata(), [])
+        tracker_thread = threading.Thread(target=tracker_server.serve_forever, daemon=True)
+        tracker_thread.start()
+
+        def stop_tracker():
+            tracker_server.shutdown()
+            tracker_server.server_close()
+            tracker_thread.join(timeout=2)
+        self.addCleanup(stop_tracker)
+
+        tracker_addr = get_server_addr(tracker_server)
+        ok = announce_chunk_to_tracker(
+            tracker_address=tracker_addr,
+            peer_id="leecher-hung",
+            file_id=self.shared_file.file_id,
+            chunk_index=0,
+        )
+        self.assertTrue(ok)
 
 if __name__ == "__main__":
     unittest.main()
