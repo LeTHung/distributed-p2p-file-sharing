@@ -9,6 +9,7 @@ import logging
 from pathlib import Path, PureWindowsPath
 import os
 import tempfile
+import threading
 import socket
 import time
 from typing import Any
@@ -155,8 +156,15 @@ def save_chunk(data: bytes, destination_path: Path | str) -> Path:
     """4. Lưu dữ liệu nhị phân của chunk ra đĩa thành file .part."""
     path = Path(destination_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as f:
-        f.write(data)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".chunk-", delete=False) as f:
+            temporary = Path(f.name)
+            f.write(data)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path
 
 
@@ -256,6 +264,8 @@ def announce_chunk_to_tracker(
         with socket.create_connection(tracker_address, timeout=timeout) as sock:
             send_json(sock, payload)
             response = recv_json(sock, timeout=timeout)
+            if response.get("request_id") != request_id:
+                raise ProtocolError("Tracker announce request_id mismatch")
             if response.get("ok") is True:
                 LOG.info("[ANNOUNCE] Đã công bố sở hữu chunk %d lên Tracker (peer_id=%s)", chunk_index, peer_id)
                 return True
@@ -365,6 +375,7 @@ def _download_chunk_from_peer(
     tracker_address: tuple[str, int] | None,
     local_peer_id: str | None,
     timeout: float,
+    sharing=None,
 ) -> bool:
     host, port, peer_id = peer
     try:
@@ -383,6 +394,8 @@ def _download_chunk_from_peer(
             )
             return False
         save_chunk(data, target_part)
+        if sharing is not None:
+            sharing.add_chunk(chunk_index)
         LOG.info(
             "[Worker] Chunk %d OK ← Seeder %s (%s:%d)",
             chunk_index, peer_id, host, port,
@@ -406,6 +419,7 @@ def _refresh_chunk_peers(
     tracker_address: tuple[str, int],
     current_peers: list[tuple[str, int, str]],
     timeout: float,
+    exclude_peer_id: str | None = None,
 ) -> list[tuple[str, int, str]]:
     LOG.info(
         "[RETRY] Tất cả Seeder cho chunk %d đều lỗi. Đang hỏi lại Tracker danh sách mới...",
@@ -422,10 +436,9 @@ def _refresh_chunk_peers(
             if chunk_index in peer.get("chunk_indexes", [])
         ]
     except DownloadError:
-        return current_peers
+        return []
 
-    if not fresh_peers:
-        return current_peers
+    fresh_peers = [p for p in fresh_peers if p[2] != exclude_peer_id]
     LOG.info(
         "[RETRY] Tracker cung cấp %d Seeder mới cho chunk %d",
         len(fresh_peers), chunk_index,
@@ -444,6 +457,7 @@ def _download_file_chunk(
     peer_id: str | None = None,
     timeout: float = 5.0,
     max_retries: int = 2,
+    sharing=None,
 ) -> int:
     """Tải một chunk với cơ chế chịu lỗi (Fault Tolerance):  
     1. Thử lần lượt các Seeder trong danh sách.
@@ -463,15 +477,17 @@ def _download_file_chunk(
         for candidate in candidate_peers:
             if _download_chunk_from_peer(
                 chunk_index, file_id, candidate, exp_hash, exp_len, target_part,
-                tracker_address, peer_id, timeout,
+                tracker_address, peer_id, timeout, sharing=sharing,
             ):
                 return chunk_index
         if attempt >= max_retries or tracker_address is None:
             break
         candidate_peers = _refresh_chunk_peers(
-            chunk_index, file_id, tracker_address, candidate_peers, timeout
+            chunk_index, file_id, tracker_address, candidate_peers, timeout, exclude_peer_id=peer_id
         )
 
+    if not candidate_peers:
+        raise DownloadError(f"Đang chờ nguồn cho chunk {chunk_index}; giữ .part và chạy lại khi peer online")
     raise DownloadError(f"Tất cả Seeder cho chunk {chunk_index} đều thất bại sau {max_retries} lần thử.")
 
 
@@ -486,18 +502,15 @@ def _download_missing_chunks(
     tracker_address: tuple[str, int] | None = None,
     peer_id: str | None = None,
     timeout: float = 5.0,
+    sharing=None,
 ) -> None:
-    orphans = [idx for idx in missing if not chunk_to_peers.get(idx)]
-    if orphans:
-        raise DownloadError(f"Không có Seeder nào giữ chunk: {orphans}")
-
     failed: list[int] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(
                 _download_file_chunk, idx, file_id, file_meta, chunks_meta,
                 chunk_to_peers, dest_dir, tracker_address=tracker_address,
-                peer_id=peer_id, timeout=timeout,
+                peer_id=peer_id, timeout=timeout, sharing=sharing,
             ): idx
             for idx in missing
         }
@@ -522,6 +535,7 @@ def download_full_file(
     peer_id: str | None = None,
     max_workers: int = 4,
     timeout: float = 10.0,
+    sharing=None,
 ) -> Path:
     """Tải song song các chunk còn thiếu, sau đó ghép file và kiểm tra SHA-256."""
     tracker_address = _validate_full_file_request(file_id, tracker_address, max_workers)
@@ -529,14 +543,26 @@ def download_full_file(
     tracker_res = _get_full_file_response(file_id, tracker_address, timeout)
     file_meta = tracker_res["file"]
     total_chunks = file_meta["total_chunks"]
+    if peer_id is not None and sharing is None:
+        # Library callers publish only during this call; CLI keeps the context
+        # alive after download so other peers can fetch the verified chunks.
+        from peer.chunk_sharing import ChunkSharing
+        settings = load_settings()
+        with ChunkSharing(tracker_address, file_meta, dest_dir, peer_id,
+                          interval=settings.heartbeat_interval_seconds, timeout=timeout) as local:
+            return download_full_file(file_id, output_dir, tracker_address, peer_id,
+                                      max_workers, timeout, sharing=local)
+    if sharing is not None and (sharing.peer_id != peer_id or sharing.store.file_id != file_id):
+        raise DownloadError("Sharing context does not match this peer/file")
     missing, chunks_meta = _find_missing_chunks(file_meta, dest_dir)
 
     if missing:
         LOG.info("Cần tải %d/%d chunk: %s", len(missing), total_chunks, missing)
-        chunk_to_peers = _build_chunk_peer_map(tracker_res.get("peers", []))
+        sources = [p for p in tracker_res.get("peers", []) if p.get("peer_id") != peer_id]
+        chunk_to_peers = _build_chunk_peer_map(sources) if sources else {}
         _download_missing_chunks(
             missing, file_id, file_meta, chunks_meta, chunk_to_peers,
-            dest_dir, max_workers, tracker_address=tracker_address, peer_id=peer_id, timeout=timeout,
+            dest_dir, max_workers, tracker_address=tracker_address, peer_id=peer_id, timeout=timeout, sharing=sharing,
         )
     else:
         LOG.info("Tất cả %d chunk đã có sẵn, chuyển sang ghép file.", total_chunks)
@@ -628,7 +654,10 @@ def main() -> None:
                         help="Expected SHA-256 hex when downloading directly")
     parser.add_argument("--workers", type=int, default=4,
                         help="Number of parallel download workers (default: 4)")
-    parser.add_argument("--peer_id", help="Leecher peer_id for announcing chunks to Tracker")
+    parser.add_argument("--peer-id", "--peer_id", dest="peer_id", help="Keep sharing verified chunks after full download")
+    parser.add_argument("--serve-port", type=int, default=7003, help="Listening port when --peer-id is set")
+    parser.add_argument("--serve-host", default="127.0.0.1")
+    parser.add_argument("--advertise-host")
 
     args = parser.parse_args()
 
@@ -641,6 +670,8 @@ def main() -> None:
         parser.error("--tracker-port must be between 1 and 65535")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if not 1 <= args.serve_port <= 65535:
+        parser.error("--serve-port must be between 1 and 65535")
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(message)s")
@@ -674,6 +705,24 @@ def main() -> None:
                 )
             if tracker_addr is None:
                 parser.error("Full-file download requires a Tracker address.")
+            if args.peer_id:
+                from peer.chunk_sharing import ChunkSharing
+                metadata = query_tracker(tracker_addr, args.file_id)["file"]
+                with ChunkSharing(tracker_addr, metadata, args.output_dir / args.file_id,
+                                  args.peer_id, host=args.serve_host, port=args.serve_port,
+                                  advertise_host=args.advertise_host,
+                                  interval=settings.heartbeat_interval_seconds,
+                                  timeout=settings.socket_timeout_seconds) as local:
+                    saved = download_full_file(args.file_id, args.output_dir, tracker_addr,
+                                               args.peer_id, args.workers, sharing=local)
+                    print(f"Downloaded and sharing verified file: {saved}", flush=True)
+                    print("Press Ctrl+C to unregister and stop sharing.", flush=True)
+                    # A finite wait lets Windows deliver Ctrl+C/Ctrl+Break to
+                    # the main thread instead of trapping it in an infinite wait.
+                    stopping = threading.Event()
+                    while not stopping.wait(0.2):
+                        pass
+                return
             saved = download_full_file(
                 file_id=args.file_id,
                 output_dir=args.output_dir,
@@ -682,6 +731,8 @@ def main() -> None:
                 max_workers=args.workers,
             )
             print(f"\n[HOÀN THÀNH] File đã tải và xác thực: {saved}")
+    except KeyboardInterrupt:
+        LOG.info("Leecher sharing stopped")
     except Exception as exc:
         LOG.exception("Quá trình tải thất bại: %s", exc)
         raise SystemExit(1)

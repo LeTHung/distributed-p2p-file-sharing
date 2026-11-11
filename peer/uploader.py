@@ -108,6 +108,7 @@ class ChunkHandler(socketserver.BaseRequestHandler):
             # recv_json uses a receive deadline and may leave a short timeout.
             self.request.settimeout(self.server.timeout_seconds)
             started = time.monotonic()
+            LOG.info("Upload started chunk=%s bytes=%s request_id=%s", request["chunk_index"], len(data), request_id)
             self.server.upload_policy.send(self.request, data)
             LOG.info("Sent chunk=%s bytes=%s elapsed=%.3fs rate_limit=%sB/s request_id=%s",
                      request["chunk_index"], len(data), time.monotonic() - started,
