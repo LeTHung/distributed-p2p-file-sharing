@@ -56,10 +56,10 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 ## Cách làm việc
 
 1. Lấy issue được giao theo tuần trên GitHub.
-2. Tạo branch `feature/<mo-ta>` từ `develop` đã cập nhật.
-3. Mỗi pull request chỉ làm một việc, ghi rõ cách kiểm tra.
-4. Nhóm trưởng Lê Tiến Hưng review và quyết định merge, không yêu cầu thêm người review.
-5. PR feature vào `develop`; sau nghiệm thu tích hợp mới đưa `develop` vào `main`. Không push trực tiếp hai nhánh này.
+2. Theo quyết định nhóm trưởng ngày 16/11/2026, cập nhật `develop` bằng `git pull --ff-only origin develop` rồi làm việc và đẩy code chung lên `develop`; không tạo thêm nhánh tích hợp tạm.
+3. Trước khi push, chạy kiểm tra liên quan; commit ghi rõ phần việc và issue. Fetch lại để tránh đè thay đổi của thành viên khác; không force-push.
+4. Nhóm trưởng Lê Tiến Hưng review và quyết định tích hợp. Nếu dùng PR của thành viên thì nhánh đích là `develop`.
+5. Chỉ đưa bản hoàn chỉnh từ `develop` lên `main` sau khi nhóm trưởng xác nhận riêng. Không push code đang phát triển lên `main`.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
 
@@ -126,3 +126,19 @@ khi announce; heartbeat duy trì nguồn. Chỉ chunk đã kiểm tra mới đư
 bố; serve từ .part hoặc completed/ sau ghép. Chỉ dùng --peer-id riêng cho
 từng tiến trình. Không có --peer-id thì chỉ tải và thoát. Alias --peer_id
 vẫn được hỗ trợ. Xem [kịch bản demo tuần 3](WEEK3_DEMO.md).
+
+## Seeder tuần 4
+
+Chạy workload TCP nhiều client, xác minh hash và ghi report JSON/log:
+
+```powershell
+python -m peer.uploader_bench --clients 24 --requests 256 --workers 4 --max-pending 64
+python -m peer.uploader_bench --clients 4 --requests 8 --workers 2 --max-pending 8 --chunk-size 8192 --upload-rate 65536
+```
+
+Mỗi lần tạo thư mục riêng trong `data/week4-evidence/`; `report.json` có
+kết quả từng request, latency p50/p95, throughput và counters của worker pool.
+Exit code 0 chỉ khi mọi request đúng hash và các kiểm tra capacity đều đạt.
+Đây là benchmark uploader trên loopback; không thay thế bài demo Tracker–peer
+thật hoặc video bảo vệ. Xem [hướng dẫn trình bày Seeder tuần 4](peer/UPLOADER_WEEK4.md)
+và [kết quả đã đo](docs/UPLOADER_WEEK4_RESULTS.md).

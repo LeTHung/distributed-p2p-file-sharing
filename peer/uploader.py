@@ -6,6 +6,7 @@ import argparse
 from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import json
 import logging
 from pathlib import Path
 import socket
@@ -18,6 +19,7 @@ import uuid
 from common.framing import ProtocolError, recv_json, send_json
 from peer.uploader_lifecycle import SeederRegistration
 from peer.upload_policy import UploadPolicy
+from peer.upload_metrics import UploadMetrics
 
 LOG = logging.getLogger(__name__)
 
@@ -110,6 +112,7 @@ class ChunkHandler(socketserver.BaseRequestHandler):
             started = time.monotonic()
             LOG.info("Upload started chunk=%s bytes=%s request_id=%s", request["chunk_index"], len(data), request_id)
             self.server.upload_policy.send(self.request, data)
+            self.server.metrics.sent(len(data))
             LOG.info("Sent chunk=%s bytes=%s elapsed=%.3fs rate_limit=%sB/s request_id=%s",
                      request["chunk_index"], len(data), time.monotonic() - started,
                      self.server.upload_policy.rate, request_id)
@@ -119,13 +122,19 @@ class ChunkHandler(socketserver.BaseRequestHandler):
                 self.error(request_id, "INVALID_REQUEST", str(error))
             except OSError:
                 pass
-        except (OSError, EOFError):
+        except (OSError, EOFError) as error:
             if self.server.stopping.is_set():
+                self.server.metrics.increment("cancelled_connections")
                 LOG.info("Upload cancelled during shutdown request_id=%s", request_id)
             else:
-                LOG.warning("Peer connection failed request_id=%s", request_id, exc_info=True)
+                self.server.metrics.increment("connection_errors")
+                # Timeout/disconnect is expected under load; one correlated line
+                # is enough. Unexpected worker exceptions still get traceback.
+                LOG.warning("Peer connection failed request_id=%s error=%s",
+                            request_id, type(error).__name__)
 
     def error(self, request_id, code, message):
+        self.server.metrics.increment("error_responses")
         send_json(self.request, {"request_id": request_id, "ok": False,
                                 "error_code": code, "message": message})
 
@@ -153,6 +162,10 @@ class UploaderServer(socketserver.TCPServer):
         self.upload_policy = UploadPolicy(upload_rate, stopping=self.stopping)
         self._connections = set()
         self._connection_lock = threading.Lock()
+        self.metrics = UploadMetrics()
+        # The TCP listen backlog is separate from the executor's bounded work
+        # capacity. Size it for that capacity so bursts do not bottleneck at 5.
+        self.request_queue_size = max(5, max_workers + max_pending)
         super().__init__(address, ChunkHandler)
         self._slots = threading.BoundedSemaphore(max_workers + max_pending)
         self._executor = ThreadPoolExecutor(max_workers=max_workers,
@@ -161,29 +174,39 @@ class UploaderServer(socketserver.TCPServer):
     def process_request(self, request, client_address):
         # Never let a slow client block the accept loop or grow an unbounded queue.
         if self.stopping.is_set() or not self._slots.acquire(blocking=False):
+            self.metrics.increment("rejected_connections")
             LOG.warning("Uploader capacity reached client=%s; closing connection", client_address)
             self.shutdown_request(request)
             return
         with self._connection_lock:
             if self.stopping.is_set():
+                self.metrics.increment("rejected_connections")
                 self._slots.release()
                 self.shutdown_request(request)
                 return
             self._connections.add(request)
+            self.metrics.accepted()
         try:
             self._executor.submit(self._serve_request, request, client_address)
         except Exception:
             with self._connection_lock:
                 self._connections.discard(request)
+            self.metrics.finished(False)
             self._slots.release()
             self.shutdown_request(request)
             raise
 
     def _serve_request(self, request, client_address):
+        active = False
         try:
             if not self.stopping.is_set():
+                self.metrics.started()
+                active = True
                 self.finish_request(request, client_address)
+            else:
+                self.metrics.increment("cancelled_connections")
         except Exception:
+            self.metrics.increment("connection_errors")
             self.handle_error(request, client_address)
         finally:
             try:
@@ -191,6 +214,7 @@ class UploaderServer(socketserver.TCPServer):
             finally:
                 with self._connection_lock:
                     self._connections.discard(request)
+                self.metrics.finished(active)
                 self._slots.release()
 
     def request_stop(self):
@@ -210,6 +234,7 @@ class UploaderServer(socketserver.TCPServer):
         # TCPServer.__init__ can call server_close before the executor exists.
         if hasattr(self, "_executor"):
             self._executor.shutdown(wait=True)
+        LOG.info("Uploader summary %s", json.dumps(self.metrics.snapshot(), sort_keys=True))
 
 
 def main():
