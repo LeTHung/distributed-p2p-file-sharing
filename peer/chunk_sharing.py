@@ -63,7 +63,7 @@ class ChunkStore:
 
 class ChunkSharing:
     def __init__(self, tracker, metadata, directory, peer_id, *, host="127.0.0.1", port=0,
-                 advertise_host=None, interval=5, timeout=5):
+                 advertise_host=None, interval=5, timeout=5.0):
         name = metadata["file_name"]
         if (Path(name).name != name or "/" in name or "\\" in name or ":" in name or name in (".", "..")):
             raise ValueError("Chunk store requires a safe display filename")
