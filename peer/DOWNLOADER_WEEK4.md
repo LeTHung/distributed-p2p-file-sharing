@@ -8,7 +8,7 @@ chứng cứ demo và nội dung giải thích cơ chế Downloader cho mốc Tu
 Từ thư mục gốc repo (đã cài `.venv`), chạy toàn bộ unit test của Downloader:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_downloader -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_downloader.py -v
 ```
 
 Các kịch bản kiểm thử trọng tâm:
@@ -57,24 +57,25 @@ Get-FileHash .\samples\demo_10mb.bin -Algorithm SHA256
 
 **Terminal 4 — Khởi động Leecher tải toàn bộ file song song và chia sẻ lại:**
 ```powershell
-.\.venv\Scripts\python.exe -m peer.downloader <file_id> --workers 4 --output-dir downloads --peer-id leecher-1 --serve-port 7003
+$fileId = Read-Host 'File ID từ log Seeder'
+.\.venv\Scripts\python.exe -m peer.downloader $fileId --workers 4 --output-dir downloads --peer-id leecher-1 --serve-port 7003
 ```
 *(Bỏ `--peer-id` và `--serve-port` nếu chỉ muốn tải xong rồi thoát mà không giữ tiến trình chia sẻ lại.)*
 
 ### Kiểm tra kết quả sau khi tải
-File hoàn chỉnh được lưu tại `downloads\<file_id>\demo_10mb.bin`. Đối chiếu SHA-256 với file nguồn:
+File hoàn chỉnh được lưu tại `downloads\<file_id>\completed\demo_10mb.bin`. Đối chiếu SHA-256 với file nguồn:
 
 ```powershell
-Get-FileHash .\downloads\<file_id>\demo_10mb.bin -Algorithm SHA256
+Get-FileHash ".\downloads\$fileId\completed\demo_10mb.bin" -Algorithm SHA256
 ```
 Kết quả mong đợi: mã `Hash` trùng khớp 100% với `.\samples\demo_10mb.bin`, và log Leecher thể hiện các chunk được tải từ cả `seed-a` và `seed-b`.
 
 ## 3. Kịch bản kiểm chứng lỗi khi demo
 
 1. **T06 — Tắt Seeder A giữa lúc đang tải**:
-   - Dùng `--upload-rate` thấp trên Seeder hoặc tải file lớn hơn, sau đó nhấn `Ctrl+C` tắt Terminal 2 (`seed-a`) khi Leecher đang tải.
+   - Khởi động Seeder A với `--upload-rate 1048576`, dùng thư mục đầu ra mới để tránh resume, rồi nhấn `Ctrl+C` tắt Terminal 2 (`seed-a`) khi Leecher đang tải.
    - Quan sát log Leecher: xuất hiện `[FAILOVER]` / `[RETRY]`, Leecher chuyển sang `seed-b` và vẫn ghép xong file đúng SHA-256.
-   - Chờ hết TTL (mặc định 20s): Tracker tự loại `seed-a` khỏi `get_peers`.
+   - Với Ctrl+C, Seeder đăng ký rời và Tracker loại nguồn ngay nếu nhận được yêu cầu. Để kiểm tra TTL riêng, dùng PowerShell chạy `Stop-Process -Id $seederPid -Force` với PID đã xác nhận của Seeder A. Khi hết TTL (mặc định 20 giây tính từ heartbeat cuối), Tracker ngừng trả nguồn này trong `get_peers`.
 2. **T03 — Sai hash chunk**:
    - Đã chứng minh tự động qua `test_t03_corrupt_chunk_deletes_part_and_skips_announce` (Leecher xóa `.part` lỗi và không gọi `announce_chunks`).
 
