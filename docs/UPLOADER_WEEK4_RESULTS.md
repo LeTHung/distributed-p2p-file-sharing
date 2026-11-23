@@ -1,5 +1,29 @@
 # Kết quả kiểm thử Seeder tuần 4
 
+## Bổ sung ngày 23/11/2026
+
+Sửa dừng Uploader trên Windows: sau `shutdown(SHUT_RDWR)` đóng cả socket
+để worker nhận frame dở không giữ queue đến hết receive timeout. Test mới
+giữ một client gửi thiếu header và một client chờ, xác minh cả hai bị hủy
+và counters về 0 trước timeout 30 giây. Thêm bài bốn client dùng chung rate
+64 KiB/s, tải tổng 64 KiB với SHA-256 đúng và thời gian ít nhất 0,98 giây.
+
+- Bộ Uploader: **26 test đạt trong 14,547 giây**.
+- Toàn bộ regression: **111 test đạt trong 110,221 giây**, không skip,
+  bao gồm E2E failover với PostgreSQL 18 thật.
+- Log: `data/week4-evidence/20261123-isolated/tests.log` (local, gitignore).
+
+Service PostgreSQL local đang tắt; lần chạy đầu kết thúc với 24 lỗi kết nối
+database. Lần nghiệm thu thành công dùng cluster PostgreSQL tạm độc lập,
+password ngẫu nhiên, chỉ bind loopback/cổng trống; đã tắt và dọn cluster sau
+kiểm thử. Không thay cấu hình hay dữ liệu database của nhóm.
+
+Phần bổ sung đi qua nhánh feature và PR vào `develop`; giữ nguyên phần
+Seeder đã có trước đó. Các số benchmark dưới đây là lần đo ngày 16/11,
+không phải số đo lại ngày 23/11.
+
+## Lần đo ngày 16/11/2026
+
 Ngày chạy: 16/11/2026 (Asia/Saigon). Môi trường: Windows 11,
 Python 3.13.7, PostgreSQL 18 local cho bộ regression/E2E.
 

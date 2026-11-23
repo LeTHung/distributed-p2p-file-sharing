@@ -70,6 +70,45 @@ class UploaderStressTests(unittest.TestCase):
         self.assertEqual(metrics["in_flight"], 0)
         self.assertEqual(metrics["active_connections"], 0)
 
+    def test_concurrent_downloads_share_one_aggregate_rate(self):
+        # Four 16-KiB chunks at 64 KiB/s require at least one second in
+        # aggregate; a separate 64-KiB/s allowance per worker would be wrong.
+        server = self.start(workers=4, pending=4, rate=65536)
+        ready = threading.Barrier(4)
+        def download_together(index):
+            ready.wait(timeout=5)
+            return self.download(server, index)
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(download_together, range(4)))
+        elapsed = time.monotonic() - started
+        self.assertEqual(sum(results), 65536)
+        self.assertGreaterEqual(elapsed, .98)
+        self.wait_for(lambda: server.metrics.snapshot()["finished_connections"] == 4)
+        metrics = server.metrics.snapshot()
+        self.assertEqual(metrics["completed_payload_bytes"], 65536)
+        self.assertEqual(metrics["successful_chunks"], 4)
+        self.assertEqual(metrics["in_flight"], 0)
+
+    def test_stop_interrupts_partial_frame_and_drains_pending_connections(self):
+        # No artificial worker patch: the first client holds a real socket
+        # read, while the second fills the only pending slot.
+        server = self.start(workers=1, pending=1, timeout=30)
+        with socket.create_connection(server.server_address, timeout=3) as active:
+            active.sendall(b"\x00")
+            self.wait_for(lambda: server.metrics.snapshot()["active_connections"] == 1)
+            with socket.create_connection(server.server_address, timeout=3) as pending:
+                pending.sendall(b"\x00")
+                self.wait_for(lambda: server.metrics.snapshot()["accepted_connections"] == 2)
+                server.request_stop()
+                self.wait_for(lambda: server.metrics.snapshot()["finished_connections"] == 2)
+        metrics = server.metrics.snapshot()
+        self.assertEqual(metrics["cancelled_connections"], 2)
+        self.assertEqual(metrics["successful_chunks"], 0)
+        self.assertEqual(metrics["active_connections"], 0)
+        self.assertEqual(metrics["in_flight"], 0)
+        self.assertEqual(metrics["connection_errors"], 0)
+
     def test_valid_and_invalid_requests_do_not_poison_worker_pool(self):
         server = self.start(workers=3, pending=32)
         with ThreadPoolExecutor(max_workers=16) as pool:

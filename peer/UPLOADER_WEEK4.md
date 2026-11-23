@@ -110,6 +110,16 @@ lỗi, client gửi thiếu header rồi timeout, queue đầy và phục hồi 
 test PostgreSQL/E2E cần biến môi trường theo WEEK1_DEMO.md; log được giữ ở
 TRACKER_TEST_LOG_DIR. Không ghi mật khẩu/DSN vào log, issue hay video.
 
+Bổ sung nghiệm thu: bốn client tải đồng thời tổng 64 KiB với rate chung
+64 KiB/s phải mất ít nhất xấp xỉ một giây, phát hiện việc cấp nhầm rate riêng
+cho từng worker. Test dừng server giữ một client gửi thiếu frame và một client
+đang chờ; `request_stop()` phải ngắt socket, hủy cả hai công việc, trả counters
+về 0 mà không phải chờ socket timeout 30 giây. Chạy riêng bộ stress:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_uploader_stress.py -v
+```
+
 Khi quay video phần Seeder, nên lần lượt chỉ config, log Upload started /
 Sent chunk, report verified_requests/failed_requests, peak worker/capacity,
 so pacing tổng và kết quả failover. Không coi việc có tool và log là đã quay
