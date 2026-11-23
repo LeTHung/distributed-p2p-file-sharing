@@ -227,6 +227,10 @@ class UploaderServer(socketserver.TCPServer):
                 connection.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+            # On Windows a timed recv may still be waiting in select after
+            # shutdown alone. Close the descriptor as well so a partial frame
+            # cannot hold the executor until its receive deadline expires.
+            connection.close()
 
     def server_close(self):
         self.request_stop()

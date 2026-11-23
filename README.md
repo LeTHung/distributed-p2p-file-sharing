@@ -56,9 +56,9 @@ Tạo database `p2p_tracker`, điền thông tin vào `.env`, rồi chạy `data
 ## Cách làm việc
 
 1. Lấy issue được giao theo tuần trên GitHub.
-2. Theo quyết định nhóm trưởng ngày 16/11/2026, cập nhật `develop` bằng `git pull --ff-only origin develop` rồi làm việc và đẩy code chung lên `develop`; không tạo thêm nhánh tích hợp tạm.
-3. Trước khi push, chạy kiểm tra liên quan; commit ghi rõ phần việc và issue. Fetch lại để tránh đè thay đổi của thành viên khác; không force-push.
-4. Nhóm trưởng Lê Tiến Hưng review và quyết định tích hợp. Nếu dùng PR của thành viên thì nhánh đích là `develop`.
+2. Cập nhật `develop` bằng `git pull --ff-only origin develop`, rồi tạo nhánh `feature/<vai-tro>-week<N>` cho phần việc mới; không push trực tiếp lên `develop`.
+3. Chạy kiểm tra liên quan; commit ghi rõ phần việc và issue, push nhánh feature rồi tạo PR có nhánh đích `develop`. Fetch lại để tránh đè thay đổi của thành viên khác; không force-push.
+4. Nhóm trưởng Lê Tiến Hưng review và quyết định merge PR vào `develop`, hoặc yêu cầu thực hiện merge cụ thể. Không tạo thêm nhánh tích hợp tạm cho từng tuần.
 5. Chỉ đưa bản hoàn chỉnh từ `develop` lên `main` sau khi nhóm trưởng xác nhận riêng. Không push code đang phát triển lên `main`.
 
 Mốc tuần 1 là: Leecher hỏi Tracker, tải được một chunk từ Seeder và kiểm tra SHA-256 đúng.
