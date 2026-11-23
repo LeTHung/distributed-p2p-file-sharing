@@ -506,5 +506,79 @@ class DownloaderTests(unittest.TestCase):
         )
         self.assertTrue(ok)
 
+        def test_t03_corrupt_chunk_deletes_part_and_skips_announce(self):
+            """Tiêu chí tuần 4 (T03): Chunk sai SHA-256 không được giữ .part và không announce."""
+            chunk_data = b"valid-chunk-0-data"
+            corrupt_data = b"CORRUPT-chunk-data"
+            file_id = hashlib.sha256(chunk_data).hexdigest()
+            chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                output_dir = tmp_path / "downloads"
+                dest_dir = output_dir / file_id
+                dest_dir.mkdir(parents=True)
+                # Giả lập có sẵn .part hỏng trên đĩa từ lần tải trước
+                stale_part = dest_dir / "0.part"
+                stale_part.write_bytes(b"stale-corrupt-bytes")
+
+                file_meta = {
+                    "file_id": file_id,
+                    "file_name": "t03.bin",
+                    "file_size": len(chunk_data),
+                    "chunk_size": len(chunk_data),
+                    "total_chunks": 1,
+                    "chunks": [{"chunk_index": 0, "chunk_hash": chunk_hash}],
+                }
+                peers = [{"peer_id": "bad-seeder", "host": "127.0.0.1", "port": 7001, "chunk_indexes": [0]}]
+                fake_sharing = Mock(peer_id="leecher-t03", store=Mock(file_id=file_id))
+
+            with patch("peer.downloader.query_tracker", return_value={"file": file_meta, "peers": peers}), \
+                 patch("peer.downloader.fetch_chunk_from_peer", return_value=corrupt_data), \
+                 patch("peer.downloader.announce_chunk_to_tracker") as mock_announce, \
+                 patch("peer.downloader.time.sleep"):
+                with self.assertRaises(DownloadError):
+                    download_full_file(
+                        file_id=file_id,
+                        output_dir=output_dir,
+                        tracker_address=("127.0.0.1", 5000),
+                        peer_id="leecher-t03",
+                        sharing=fake_sharing,
+                    )
+
+            self.assertFalse(stale_part.exists(), "File .part hỏng phải bị xóa")
+            mock_announce.assert_not_called()
+
+    def test_t06_all_seeders_down_reports_waiting_for_source(self):
+        """Tiêu chí tuần 4 (T06): Khi tất cả Seeder tắt, báo chờ nguồn rõ ràng và không tạo file đích."""
+        chunk_data = b"chunk-0-payload"
+        file_id = hashlib.sha256(chunk_data).hexdigest()
+        file_meta = {
+            "file_id": file_id,
+            "file_name": "t06.bin",
+            "file_size": len(chunk_data),
+            "chunk_size": len(chunk_data),
+            "total_chunks": 1,
+            "chunks": [{"chunk_index": 0, "chunk_hash": hashlib.sha256(chunk_data).hexdigest()}],
+        }
+        peers = [{"peer_id": "dead-seeder", "host": "127.0.0.1", "port": 7002, "chunk_indexes": [0]}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            output_dir = tmp_path / "downloads"
+            out_file = output_dir / file_id / "t06.bin"
+            with patch("peer.downloader.query_tracker", return_value={"file": file_meta, "peers": peers}), \
+                 patch("peer.downloader.fetch_chunk_from_peer", side_effect=DownloadError("Connection refused")), \
+                 patch("peer.downloader.time.sleep"):
+                with self.assertRaises(DownloadError) as ctx:
+                    download_full_file(
+                        file_id=file_id,
+                        output_dir=output_dir,
+                        tracker_address=("127.0.0.1", 5000),
+                    )
+
+            self.assertIn("Không thể tải", str(ctx.exception))
+            self.assertFalse(out_file.exists())
+
 if __name__ == "__main__":
     unittest.main()

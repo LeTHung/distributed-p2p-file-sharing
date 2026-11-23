@@ -343,6 +343,7 @@ def _find_missing_chunks(
                 continue
             else:
                 LOG.warning("Chunk %d đã có nhưng SHA-256 sai, sẽ tải lại.", idx)
+                part_file.unlink(missing_ok=True)
         missing.append(idx)
     return missing, chunks_meta
 
